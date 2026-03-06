@@ -1,0 +1,20 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+DATABASE_URL: str|None = os.getenv("DATABASE_URL")
+
+# config.py
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+
+DATA_DIR = BASE_DIR / "html_data"
+EVENT_HTML_DIR = DATA_DIR / "events"
+FIGHTER_HTML_DIR = DATA_DIR / "fighters"
+
+EVENT_NAMES_FILE = EVENT_HTML_DIR / "ufc_event_names.txt"
+FAILED_EVENT_NAMES_FILE = EVENT_HTML_DIR / "ufc_failed_event_names.txt"
+FIGHTER_URLS_FILE = FIGHTER_HTML_DIR / "ufc_fighter_tapology_links.txt"
+
+SQL_ECHO: bool = os.getenv("SQL_ECHO", "false").lower() == "true"
