@@ -1,5 +1,6 @@
 from datetime import date
-from sqlalchemy import Column, Integer, String, Float, Date, CheckConstraint
+from sqlalchemy import Column, Integer, String, Float, Date, Boolean, CheckConstraint, case
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import validates
 from models.base import Base
 
@@ -22,6 +23,7 @@ class Fighter(Base):
     draws = Column(Integer, nullable=False, default=0)
     no_contests = Column(Integer, nullable=False)
     number_of_total_bouts = Column(Integer, nullable=False)
+    latest_bout_date = Column(Date, nullable=True)
 
     # Stats
     overall_finish_rate = Column(Float, nullable=False)
@@ -43,6 +45,24 @@ class Fighter(Base):
         # Stats constraints
         CheckConstraint('overall_finish_rate >= 0.0 AND overall_finish_rate <= 1.0', name='check_overall_finish_rate_range'),
     )
+
+    # Computed property — active_fighter
+    @hybrid_property
+    def active_fighter(self): # type: ignore
+        """True if the fighter has had a bout within the last 10 years, or if no bout date is recorded."""
+        if self.latest_bout_date is None:
+            return True
+        ten_years_ago = date.today().replace(year=date.today().year - 10)
+        return self.latest_bout_date >= ten_years_ago
+
+    @active_fighter.expression
+    def active_fighter(cls):
+        ten_years_ago = date.today().replace(year=date.today().year - 10)
+        return case(
+            (cls.latest_bout_date == None, True),
+            (cls.latest_bout_date >= ten_years_ago, True),
+            else_=False,
+        )
 
     # Python-level validation — Identity
     @validates('name')

@@ -5,15 +5,15 @@ CLI tool for running individual pipeline phases during development and testing.
 
 Usage:
     python run_phase.py --phase scrape
-    python run_phase.py --phase parse
-    python run_phase.py --phase upload
+    python run_phase.py --phase fighters
+    python run_phase.py --phase events
 """
 
 import argparse
 import logging
 import sys
 
-from main import run_scraping, run_parsing, run_upload, setup_logging
+from main import run_scraping, run_fighters, run_events, setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +24,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--phase",
-        choices=("scrape", "parse", "upload"),
+        choices=("scrape", "fighters", "events"),
         required=True,
-        help="Pipeline phase to run: scrape | parse | upload",
+        help="Pipeline phase to run: scrape | fighters | events",
     )
     args = parser.parse_args()
 
@@ -34,26 +34,10 @@ def main() -> None:
 
     if args.phase == "scrape":
         success = run_scraping()
-
-    elif args.phase == "parse":
-        try:
-            fighters, events, bouts = run_parsing()
-            logger.info(
-                f"Parse complete — fighters: {len(fighters)}, "
-                f"events: {len(events)}, bouts: {len(bouts)}"
-            )
-            success = True
-        except Exception:
-            logger.exception("Parsing phase failed.")
-            success = False
-
-    elif args.phase == "upload":
-        try:
-            fighters, events, bouts = run_parsing()
-        except Exception:
-            logger.exception("Upload requires successful parsing. Parsing failed.")
-            sys.exit(1)
-        success = run_upload(fighters, events, bouts)
+    elif args.phase == "fighters":
+        success = run_fighters()
+    elif args.phase == "events":
+        success = run_events()
 
     sys.exit(0 if success else 1)
 

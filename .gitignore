@@ -210,3 +210,5 @@ __marimo__/
 *.html
 ufc_*.txt
 
+# Miscellaneous files for testing and development
+utils/misc

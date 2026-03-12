@@ -1,15 +1,15 @@
 """
 events.py
 
-Parses UFC bout data from saved Tapology HTML pages using Playwright.
+Parses UFC bout data from saved Tapology HTML pages using BeautifulSoup.
 
 Notes:
   - Extracts bout information including fighters, weight division, method of victory, etc.
   - Fighter ages are extracted from the expandable comparison table.
   - Returns an Event object and a list of Bout objects per HTML file.
   - Left fighter on Tapology = fighter_one; right fighter = fighter_two.
-  - Bout.fighter_one and Bout.fighter_two temporarily store fighter names (str)
-    during parsing. The loader resolves these to database IDs before insertion.
+  - Bout.fighter_one and Bout.fighter_two are resolved to Fighter IDs inside
+    parse_event using lookup_fighter (name + birth year derived from age).
   - Bout.event_id is left unset during parsing. The loader assigns it after
     the Event has been flushed and given a database ID.
 """
@@ -19,13 +19,16 @@ import re
 from datetime import date
 from datetime import time as dt_time
 from pathlib import Path
+
+from bs4 import BeautifulSoup
+from sqlalchemy import extract
+from sqlalchemy.orm import Session
+
 from config import EVENT_HTML_DIR
-
-from playwright.sync_api import sync_playwright
-from scraper.browser import create_browser_context
-
 from models.bout import Bout
 from models.event import Event
+from models.fighter import Fighter
+from db.session import get_db_session
 
 logger = logging.getLogger(__name__)
 
@@ -33,15 +36,15 @@ logger = logging.getLogger(__name__)
 
 # Tapology method text (lowercase prefix) → Bout.method_of_victory
 METHOD_MAP = [
-    ("ko/tko",               "KO/TKO"),
-    ("technical submission", "SUB"),
-    ("submission",           "SUB"),
-    ("decision",             "DEC"),
-    ("ends in a draw",         "DRAW"),
-    ("result overturned",     "DRAW"),
-    ("ends in a no contest",           "NC"),
+    ("ko/tko",                       "KO/TKO"),
+    ("technical submission",         "SUB"),
+    ("submission",                   "SUB"),
+    ("decision",                     "DEC"),
+    ("ends in a draw",               "DRAW"),
+    ("result overturned",            "DRAW"),
+    ("ends in a no contest",         "NC"),
     ("overturned to no contest",     "NC"),
-    ("disqualification",     "DQ"),
+    ("disqualification",             "DQ"),
 ]
 
 WEIGHT_DIVISION_MAP = [
@@ -68,6 +71,7 @@ LOCATION_EXCEPTIONS = {
 }
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
 
 def map_method(raw: str) -> str:
     lower = raw.lower().strip()
@@ -126,7 +130,7 @@ def parse_location(text: str) -> tuple[str, str]:
         raise ValueError(f"Cannot parse location from: {text!r}")
     else:
         country = parts[-1]
-        state   = parts[-2]
+        state = parts[-2]
         return country, state
 
 
@@ -140,6 +144,7 @@ def parse_rounds_scheduled(text: str) -> int:
         raise ValueError(f"rounds_scheduled must be 2, 3, or 5, got {n}")
     return n
 
+
 def parse_weight_division(raw: str) -> str:
     if not raw.lower().strip().isnumeric():
         raise ValueError(f"Parsed value is not a valid numeric. Value parsed: {raw}")
@@ -151,122 +156,198 @@ def parse_weight_division(raw: str) -> str:
     return f"Catchweight ({raw})"
 
 
+# ── Fighter lookup ─────────────────────────────────────────────────────────────
+
+
+def lookup_fighter(session: Session, name: str, age_at_fight: int | None, event_date: date) -> int | None:
+    """
+    Resolve a fighter name to a Fighter.id using name and computed birth year.
+
+    Birth year is derived by subtracting age_at_fight from event_date.year.
+    Both (year - age) and (year - age - 1) are checked to account for whether
+    the fighter's birthday had occurred before the event date.
+    If age_at_fight is None, the lookup falls back to name only.
+    """
+    query = session.query(Fighter).filter(Fighter.name == name)
+
+    if age_at_fight is not None:
+        birth_years = [event_date.year - age_at_fight, event_date.year - age_at_fight - 1]
+        query = query.filter(extract('year', Fighter.date_of_birth).in_(birth_years))
+
+    results = query.all()
+
+    if len(results) == 1:
+        return results[0].id
+    elif len(results) == 0:
+        logger.warning(f"No Fighter found for name='{name}', age_at_fight={age_at_fight}, event_date={event_date}")
+        return None
+    else:
+        logger.warning(f"Multiple Fighters matched name='{name}', age_at_fight={age_at_fight}, event_date={event_date} — using first match (id={results[0].id})")
+        return results[0].id
+
+
 # ── Main parser ────────────────────────────────────────────────────────────────
 
-def parse_event(html_path: Path) -> tuple[Event, list[Bout]]:
+
+def parse_event(html_path: Path, session: Session) -> tuple[Event, list[Bout]]:
     """
     Load a saved Tapology event HTML and return a tuple of:
       - A single Event object with event-level metadata
       - A list of Bout objects for each fight on the card
 
-    Note: Bout.event_id and Bout.fighter_one/fighter_two are not resolved
-    to database IDs here. The loader handles that after flushing.
+    Note: Bout.event_id is not resolved here. The loader assigns it after
+    the Event has been flushed. Bout.fighter_one/fighter_two are resolved
+    to Fighter IDs via lookup_fighter using name + age at fight.
     """
-    abs_path = Path(html_path).resolve().as_posix()
-    file_url = f"file:///{abs_path}"
+    with open(html_path, "r", encoding="utf-8") as f:
+        soup = BeautifulSoup(f, "lxml")
 
-    with sync_playwright() as p:
-        browser, page = create_browser_context(p)
-        page.goto(file_url, wait_until="domcontentloaded")
+    # ── Event-level metadata ──────────────────────────────────────────────
+    heading = soup.select_one("h2.text-2xl, h2.text-xl")
+    if not heading:
+        raise ValueError(f"Could not locate event name heading: {html_path}")
+    event_name = heading.get_text(strip=True)
 
-        # ── Event-level metadata ──────────────────────────────────────────────
-        event_name = page.locator("h2.text-2xl, h2.text-xl").first.inner_text().strip()
+    # Find a span.text-neutral-700 whose text contains a MM.DD.YYYY date
+    date_span = None
+    for span in soup.select("span.text-neutral-700"):
+        if re.search(r"\d{2}\.\d{2}\.\d{4}", span.get_text()):
+            date_span = span
+            break
 
-        # Find a span.text-neutral-700 whose text contains a MM.DD.YYYY date
-        date_span = (
-            page.locator("span.text-neutral-700")
-            .filter(has_text=re.compile(r"\d{2}\.\d{2}\.\d{4}"))
-            .first
-        )
-        event_date, event_time = parse_event_date_and_time(date_span.inner_text().strip())
+    if not date_span:
+        raise ValueError(f"Could not locate event date span: {html_path}")
+    event_date, event_time = parse_event_date_and_time(date_span.get_text(strip=True))
 
-        # Location ── "City, State, Country" or "City, Country"
-        location_li   = page.locator("li").filter(has_text="Location:").first
-        location_text = location_li.locator("span.text-neutral-700").inner_text().strip()
-        country, state = parse_location(location_text)
+    # Location ── "City, State, Country" or "City, Country"
+    location_li = None
+    for li in soup.select("li"):
+        if "Location:" in li.get_text():
+            location_li = li
+            break
 
-        # ── Create Event object ───────────────────────────────────────────────
-        event = Event(
-            title=event_name,
-            date=event_date,
-            time=event_time,
-            country=country,
-            state=state,
-        )
+    if not location_li:
+        raise ValueError(f"Could not locate location li: {html_path}")
+    location_span = location_li.select_one("span.text-neutral-700")
+    if not location_span:
+        raise ValueError(f"Could not locate location span: {html_path}")
+    location_text = location_span.get_text(strip=True)
+    country, state = parse_location(location_text)
 
-        # ── Per-bout extraction ───────────────────────────────────────────────
-        bout_wrappers = page.locator(
-            "div[data-bout-wrapper][id^='boutFullsize']"
-        ).all()
+    # ── Create Event object ───────────────────────────────────────────────
+    event = Event(
+        title=event_name,
+        date=event_date,
+        time=event_time,
+        country=country,
+        state=state,
+    )
 
-        bouts: list[Bout] = []
+    # ── Per-bout extraction ───────────────────────────────────────────────
+    bout_wrappers = soup.select("div[data-bout-wrapper][id^='boutFullsize']")
 
-        for bout in bout_wrappers:
-            bout_id     = bout.get_attribute("id")
-            tapology_id = bout_id.removeprefix("boutFullsize") if bout_id else None
+    bouts: list[Bout] = []
 
-            if bout_id is None:
-                logger.warning(f"Could not identify the bout id for event: {event_name}")
+    for bout in bout_wrappers:
+        bout_id = bout.get("id")
+        tapology_id = bout_id.removeprefix("boutFullsize") if bout_id else None
 
-            try:
-                # Method of victory
-                raw_method = bout.locator("span.uppercase").first.inner_text().strip()
-                method     = map_method(raw_method)
+        if bout_id is None:
+            logger.warning(f"Could not identify the bout id for event: {event_name}")
 
-                # Center column: rounds scheduled and weight division
-                center = bout.locator("div.rounded.text-tap_darkgold").first
+        try:
+            # Method of victory
+            method_span = bout.select_one("span.uppercase")
+            if not method_span:
+                raise ValueError("Could not locate method of victory span")
+            raw_method = method_span.get_text(strip=True)
+            method = map_method(raw_method)
 
-                rounds_text      = center.locator("div.text-xs11").first.inner_text().strip()
-                rounds_scheduled = parse_rounds_scheduled(rounds_text)
+            # Center column: rounds scheduled and weight division
+            center = bout.select_one("div.rounded.text-tap_darkgold")
+            if not center:
+                raise ValueError("Could not locate center column div")
 
-                weight_division_text = center.locator("span.bg-tap_darkgold").inner_text().strip()
-                weight_division = parse_weight_division(weight_division_text)
+            rounds_el = center.select_one("div.text-xs11")
+            if not rounds_el:
+                raise ValueError("Could not locate rounds scheduled element")
+            rounds_text = rounds_el.get_text(strip=True)
+            rounds_scheduled = parse_rounds_scheduled(rounds_text)
 
-                # Fighter names
-                left_bio  = page.locator(f"#{bout_id}_leftBio")
-                right_bio = page.locator(f"#{bout_id}_rightBio")
-                left_name  = left_bio.locator("a.link-primary-red").first.inner_text().strip()
-                right_name = right_bio.locator("a.link-primary-red").first.inner_text().strip()
+            weight_span = center.select_one("span.bg-tap_darkgold")
+            if not weight_span:
+                raise ValueError("Could not locate weight division span")
+            weight_division_text = weight_span.get_text(strip=True)
+            weight_division = parse_weight_division(weight_division_text)
 
-                # Determine winner
-                if left_bio.locator("div.bg-green-500").count() > 0:
-                    winner = "fighter_one"
-                elif left_bio.locator("div.bg-blue-500").count() > 0:
-                    winner = "draw"
-                else:
-                    winner = "fighter_two"
+            # Fighter names
+            left_bio = soup.select_one(f"#{bout_id}_leftBio")
+            right_bio = soup.select_one(f"#{bout_id}_rightBio")
 
-                # Fighter ages from the expandable comparison table
-                expanded   = page.locator(f"#boutExpandedDetails{tapology_id}")
-                age_row    = expanded.locator("tr").filter(has_text="Age at Fight").first
-                hidden_tds = age_row.locator("td.hidden").all()
-                left_age  = parse_age(hidden_tds[0].text_content()) if len(hidden_tds) > 0 else None
-                right_age = parse_age(hidden_tds[1].text_content()) if len(hidden_tds) > 1 else None
+            if not left_bio or not right_bio:
+                raise ValueError(f"Could not locate fighter bio divs for bout {bout_id}")
 
-                bouts.append(Bout(
-                    # event_id is assigned by the loader after the Event is flushed
-                    fighter_one=left_name,
-                    fighter_one_age_at_bout=left_age,
-                    fighter_two=right_name,
-                    fighter_two_age_at_bout=right_age,
-                    weight_division=weight_division,
-                    winner=winner,
-                    method_of_victory=method,
-                    finish=method in FINISH_METHODS,
-                    rounds_scheduled=rounds_scheduled,
-                ))
+            left_name_el = left_bio.select_one("a.link-primary-red")
+            right_name_el = right_bio.select_one("a.link-primary-red")
 
-            except Exception as exc:
-                logger.warning(f"  [WARN] Skipped bout {bout_id} for event {event_name}: {type(exc).__name__}: {exc}")
-                continue
+            if not left_name_el or not right_name_el:
+                raise ValueError(f"Could not locate fighter name links for bout {bout_id}")
 
-        browser.close()
+            left_name = left_name_el.get_text(strip=True)
+            right_name = right_name_el.get_text(strip=True)
+
+            # Determine winner
+            if left_bio.select_one("div.bg-green-500"):
+                winner = "fighter_one"
+            elif left_bio.select_one("div.bg-blue-500"):
+                winner = "draw"
+            else:
+                winner = "fighter_two"
+
+            # Fighter ages from the expandable comparison table
+            expanded = soup.select_one(f"#boutExpandedDetails{tapology_id}")
+            left_age = None
+            right_age = None
+
+            if expanded:
+                age_row = None
+                for tr in expanded.select("tr"):
+                    if "Age at Fight" in tr.get_text():
+                        age_row = tr
+                        break
+
+                if age_row:
+                    hidden_tds = age_row.select("td.hidden")
+                    left_age = parse_age(hidden_tds[0].get_text()) if len(hidden_tds) > 0 else None
+                    right_age = parse_age(hidden_tds[1].get_text()) if len(hidden_tds) > 1 else None
+
+            fighter_one_id = lookup_fighter(session, left_name, left_age, event_date)
+            fighter_two_id = lookup_fighter(session, right_name, right_age, event_date)
+
+            bouts.append(Bout(
+                # event_id is assigned by the loader after the Event is flushed
+                fighter_one=fighter_one_id,
+                fighter_one_age_at_bout=left_age,
+                fighter_two=fighter_two_id,
+                fighter_two_age_at_bout=right_age,
+                weight_division=weight_division,
+                winner=winner,
+                method_of_victory=method,
+                finish=method in FINISH_METHODS,
+                rounds_scheduled=rounds_scheduled,
+            ))
+
+        except Exception as exc:
+            logger.warning(f"  [WARN] Skipped bout {bout_id} for event {event_name}: {type(exc).__name__}: {exc}")
+            continue
+
     return event, bouts
 
 
 # ── Aggregate parser ───────────────────────────────────────────────────────────
 
-def parse_all_events() -> tuple[list[Event], list[Bout]]:
+
+def parse_all_events(session: Session) -> tuple[list[Event], list[Bout]]:
     """
     Parse all event HTML files in EVENT_HTML_DIR.
     Returns a tuple of (all_events, all_bouts).
@@ -282,7 +363,7 @@ def parse_all_events() -> tuple[list[Event], list[Bout]]:
         if file.is_file() and file.suffix == ".html":
             try:
                 logger.info(f"Currently parsing: {file.name}")
-                event, bouts = parse_event(file)
+                event, bouts = parse_event(file, session)
 
                 all_events.append(event)
                 all_bouts.extend(bouts)
@@ -315,4 +396,7 @@ def parse_all_events() -> tuple[list[Event], list[Bout]]:
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    events, bouts = parse_all_events()
+    with get_db_session() as session:
+        events, bouts = parse_all_events(session)
+        session.commit()
+    
