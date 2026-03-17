@@ -1,5 +1,5 @@
 from sqlalchemy import Column, Integer, String, Float, Boolean, CheckConstraint, ForeignKey
-from sqlalchemy.orm import validates
+from sqlalchemy.orm import validates, relationship
 from models.base import Base
 
 
@@ -9,6 +9,7 @@ class Bout(Base):
     # Identity
     id = Column(Integer, primary_key=True)
     event_id = Column(Integer, ForeignKey('events.id'), nullable=False)
+    event = relationship("Event", back_populates="bouts")
     weight_division = Column(String(50), nullable=False)
     rounds_scheduled = Column(Integer, nullable=False, default=3)
 
@@ -24,7 +25,7 @@ class Bout(Base):
     finish = Column(Boolean, default=False)
 
     # Stats
-    finish_rate_at_bout = Column(Float, nullable=False)
+    #finish_rate_at_bout = Column(Float, nullable=False)
 
     # Database-level constraints
     __table_args__ = (
@@ -40,7 +41,7 @@ class Bout(Base):
         CheckConstraint("method_of_victory IN ('KO/TKO', 'SUB', 'DEC', 'NC', 'DQ', 'DRAW')", name='check_method_of_victory'),
 
         # Stats constraints
-        CheckConstraint('finish_rate_at_bout >= 0.0 AND finish_rate_at_bout <= 1.0', name='check_finish_rate_range'),
+        #CheckConstraint('finish_rate_at_bout >= 0.0 AND finish_rate_at_bout <= 1.0', name='check_finish_rate_range'),
     )
 
     # Python-level validation — Identity
@@ -67,11 +68,11 @@ class Bout(Base):
         return normalized
 
     # Python-level validation — Stats
-    @validates('finish_rate_at_bout')
-    def validate_finish_rate(self, key, value):
-        if value < 0.0 or value > 1.0:
-            raise ValueError("finish_rate_at_bout must be between 0.0 and 1.0")
-        return value
+    # @validates('finish_rate_at_bout')
+    # def validate_finish_rate(self, key, value):
+    #     if value < 0.0 or value > 1.0:
+    #         raise ValueError("finish_rate_at_bout must be between 0.0 and 1.0")
+    #     return value
 
     def __repr__(self):
         return f"<Bout(id={self.id}, event_id={self.event_id}, method='{self.method_of_victory}')>"

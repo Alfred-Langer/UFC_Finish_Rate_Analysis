@@ -9,21 +9,22 @@ Notes:
   - Returns an Event object and a list of Bout objects per HTML file.
   - Left fighter on Tapology = fighter_one; right fighter = fighter_two.
   - Bout.fighter_one and Bout.fighter_two are resolved to Fighter IDs inside
-    parse_event using lookup_fighter (name + birth year derived from age).
+    parse_event using lookup_fighter (name → Tapology fighter ID → birth year).
+  - Fighter lookups use an in-memory FighterIndex built once per run to avoid
+    per-bout database queries.
   - Bout.event_id is left unset during parsing. The loader assigns it after
     the Event has been flushed and given a database ID.
 """
 
 import logging
 import re
-from datetime import date
-from datetime import time as dt_time
+from collections import defaultdict
+import datetime
+from datetime import date, time as dt_time, datetime
 from pathlib import Path
-
 from bs4 import BeautifulSoup
-from sqlalchemy import extract
 from sqlalchemy.orm import Session
-
+from unidecode import unidecode
 from config import EVENT_HTML_DIR
 from models.bout import Bout
 from models.event import Event
@@ -91,14 +92,30 @@ def parse_age(text: str | None) -> int | None:
         return int(m.group(1)) if m else None
 
 
-def parse_event_date_and_time(text: str) -> tuple[date, str]:
-    """'Saturday 05.29.2010 at 11:00 PM ET' → date(2010, 5, 29)"""
+def parse_height_from_cell(text: str | None) -> float | None:
+    """'5\\'4\\" (163cm)' → 64.0, 'N/A' or missing → None"""
+    if not text:
+        return None
+    m = re.match(r"\s*(\d+)'(\d+)\"", text.strip())
+    if m:
+        return float(int(m.group(1)) * 12 + int(m.group(2)))
+    return None
+
+
+def parse_event_date_and_time(text: str) -> tuple[date, dt_time]:
+    """'Saturday 05.29.2010 at 11:00 PM ET' → (date(2010, 5, 29), time(23, 0))"""
     m = re.search(r"(\d{2})\.(\d{2})\.(\d{4})", text)
     if not m:
         raise ValueError(f"Cannot parse date from: {text!r}")
     month, day, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    time = text.split(" at ")[-1] if " at " in text else ""
-    return (date(year, month, day), time.strip())
+
+    parsed_time = dt_time(0, 0)
+    if " at " in text:
+        time_str = text.split(" at ")[-1].strip()
+        time_str = re.sub(r"\s*[A-Z]{2,4}$", "", time_str).strip()
+        parsed_time = datetime.strptime(time_str, "%I:%M %p").time()
+
+    return (date(year, month, day), parsed_time)
 
 
 def parse_stop_time(text: str) -> dt_time | None:
@@ -158,46 +175,107 @@ def parse_weight_division(raw: str) -> str:
 
 # ── Fighter lookup ─────────────────────────────────────────────────────────────
 
+# name → [(birth_year | None, fighter_id, tapology_id | None), ...]
+FighterIndex = dict[str, list[tuple[int | None, int, int | None]]]
 
-def lookup_fighter(session: Session, name: str, age_at_fight: int | None, event_date: date) -> int | None:
+# Tapology sometimes displays abbreviated names on bout pages that differ from
+# the full name stored in the fighters table. Map each abbreviation to its full name.
+NAME_ALIASES: dict[str, str] = {
+    "A. Nogueira":          "Antonio Rodrigo Nogueira",
+    "A. Al-Selwady":        "Abdul-Kareem Al-Selwady",
+    "D. Silva de Andrade":  "Douglas Silva de Andrade",
+    "E. Zaleski dos Santos": "Elizeu Zaleski dos Santos",
+    "H. Brown Morrison":    "Humberto Brown Morrison",
+    "M. Waterson-Gomez":    "Michelle Waterson-Gomez",
+    "N. Tumendemberel":     "Nyamjargal Tumendemberel",
+    "R. Sokoudjou":         "Rameau Thierry Sokoudjou",
+    "Ulka Sasaki":          "Yuta Sasaki",
+}
+
+
+def build_fighter_index(session: Session) -> FighterIndex:
     """
-    Resolve a fighter name to a Fighter.id using name and computed birth year.
-
-    Birth year is derived by subtracting age_at_fight from event_date.year.
-    Both (year - age) and (year - age - 1) are checked to account for whether
-    the fighter's birthday had occurred before the event date.
-    If age_at_fight is None, the lookup falls back to name only.
+    Load every Fighter from the DB in one query and build an in-memory index.
+    Called once per pipeline run; all subsequent lookups are O(1) dict access.
+    NAME_ALIASES are applied so abbreviated Tapology names resolve correctly.
     """
-    query = session.query(Fighter).filter(Fighter.name == name)
+    index: FighterIndex = defaultdict(list)
+    for f in session.query(Fighter).all():
+        birth_year = f.date_of_birth.year if f.date_of_birth else None
+        index[f.name].append((birth_year, f.id, f.tapology_id))
 
-    if age_at_fight is not None:
-        birth_years = [event_date.year - age_at_fight, event_date.year - age_at_fight - 1]
-        query = query.filter(extract('year', Fighter.date_of_birth).in_(birth_years))
+    for alias, full_name in NAME_ALIASES.items():
+        if full_name in index:
+            index[alias] = index[full_name]
+        else:
+            logger.warning(f"NAME_ALIASES: full name '{full_name}' not found in index — alias '{alias}' will not resolve")
 
-    results = query.all()
+    return dict(index)
 
-    if len(results) == 1:
-        return results[0].id
-    elif len(results) == 0:
-        logger.warning(f"No Fighter found for name='{name}', age_at_fight={age_at_fight}, event_date={event_date}")
+
+def parse_tapology_fighter_id(href: str | None) -> int | None:
+    """'/fightcenter/fighters/117305-alex-pereira' → 117305"""
+    if not href:
         return None
+    m = re.search(r"/fighters/(\d+)-", href)
+    return int(m.group(1)) if m else None
+
+
+def lookup_fighter(
+    index: FighterIndex,
+    name: str,
+    age_at_fight: int | None,
+    event_date: date,
+    tapology_id: int | None = None,
+) -> int | None:
+    """
+    Resolve a fighter name to a Fighter.id using the in-memory FighterIndex.
+
+    Resolution priority:
+      1. Name (exact match in index)
+      2. Tapology fighter ID — when duplicates remain, filters to candidates whose
+         stored tapology_id matches; if tapology_id is None, prefers candidates
+         whose stored tapology_id is also None
+      3. Birth year (derived from age_at_fight) — applied when duplicates remain
+         after step 2
+    """
+    candidates = list(index.get(name, []))
+
+    if len(candidates) > 1:
+        if tapology_id is not None:
+            filtered = [c for c in candidates if c[2] == tapology_id]
+        else:
+            filtered = [c for c in candidates if c[2] is None]
+        if filtered:
+            candidates = filtered
+
+    if len(candidates) > 1 and age_at_fight is not None:
+        birth_years = {event_date.year - age_at_fight, event_date.year - age_at_fight - 1}
+        filtered = [c for c in candidates if c[0] in birth_years]
+        if filtered:
+            candidates = filtered
+
+    if len(candidates) == 1:
+        return candidates[0][1]
+    elif len(candidates) == 0:
+        logger.warning(f"No Fighter found for name='{name}', tapology_id={tapology_id}, age_at_fight={age_at_fight}, event_date={event_date}")
+        raise ValueError(f"No Fighter found for name='{name}', tapology_id={tapology_id}, age_at_fight={age_at_fight}, event_date={event_date}")
     else:
-        logger.warning(f"Multiple Fighters matched name='{name}', age_at_fight={age_at_fight}, event_date={event_date} — using first match (id={results[0].id})")
-        return results[0].id
+        logger.warning(f"Multiple Fighters matched name='{name}', tapology_id={tapology_id}, age_at_fight={age_at_fight}, event_date={event_date} — using first match (id={candidates[0][1]})")
+        return candidates[0][1]
 
 
 # ── Main parser ────────────────────────────────────────────────────────────────
 
 
-def parse_event(html_path: Path, session: Session) -> tuple[Event, list[Bout]]:
+def parse_event(html_path: Path, index: FighterIndex) -> Event:
     """
-    Load a saved Tapology event HTML and return a tuple of:
-      - A single Event object with event-level metadata
-      - A list of Bout objects for each fight on the card
+    Load a saved Tapology event HTML and return an Event object with its
+    bouts already attached via event.bouts. SQLAlchemy will assign event_id
+    automatically when the event is flushed.
 
-    Note: Bout.event_id is not resolved here. The loader assigns it after
-    the Event has been flushed. Bout.fighter_one/fighter_two are resolved
-    to Fighter IDs via lookup_fighter using name + age at fight.
+    Bout.fighter_one/fighter_two are resolved to Fighter IDs via
+    lookup_fighter using name + Tapology fighter ID + birth year.
     """
     with open(html_path, "r", encoding="utf-8") as f:
         soup = BeautifulSoup(f, "lxml")
@@ -246,7 +324,9 @@ def parse_event(html_path: Path, session: Session) -> tuple[Event, list[Bout]]:
     # ── Per-bout extraction ───────────────────────────────────────────────
     bout_wrappers = soup.select("div[data-bout-wrapper][id^='boutFullsize']")
 
-    bouts: list[Bout] = []
+    # Pre-index all elements with IDs so per-bout lookups are O(1) instead of
+    # triggering a full document traversal on every soup.select_one("#...") call
+    id_index = {tag["id"]: tag for tag in soup.find_all(id=True)}
 
     for bout in bout_wrappers:
         bout_id = bout.get("id")
@@ -281,8 +361,8 @@ def parse_event(html_path: Path, session: Session) -> tuple[Event, list[Bout]]:
             weight_division = parse_weight_division(weight_division_text)
 
             # Fighter names
-            left_bio = soup.select_one(f"#{bout_id}_leftBio")
-            right_bio = soup.select_one(f"#{bout_id}_rightBio")
+            left_bio = id_index.get(f"{bout_id}_leftBio")
+            right_bio = id_index.get(f"{bout_id}_rightBio")
 
             if not left_bio or not right_bio:
                 raise ValueError(f"Could not locate fighter bio divs for bout {bout_id}")
@@ -293,8 +373,11 @@ def parse_event(html_path: Path, session: Session) -> tuple[Event, list[Bout]]:
             if not left_name_el or not right_name_el:
                 raise ValueError(f"Could not locate fighter name links for bout {bout_id}")
 
-            left_name = left_name_el.get_text(strip=True)
-            right_name = right_name_el.get_text(strip=True)
+            left_name = unidecode(left_name_el.get_text(strip=True))
+            right_name = unidecode(right_name_el.get_text(strip=True))
+
+            left_tapology_id = parse_tapology_fighter_id(left_name_el.get("href"))
+            right_tapology_id = parse_tapology_fighter_id(right_name_el.get("href"))
 
             # Determine winner
             if left_bio.select_one("div.bg-green-500"):
@@ -305,27 +388,32 @@ def parse_event(html_path: Path, session: Session) -> tuple[Event, list[Bout]]:
                 winner = "fighter_two"
 
             # Fighter ages from the expandable comparison table
-            expanded = soup.select_one(f"#boutExpandedDetails{tapology_id}")
+            expanded = id_index.get(f"boutExpandedDetails{tapology_id}")
             left_age = None
             right_age = None
 
             if expanded:
                 age_row = None
+                height_row = None
                 for tr in expanded.select("tr"):
-                    if "Age at Fight" in tr.get_text():
+                    text = tr.get_text()
+                    if "Age at Fight" in text:
                         age_row = tr
-                        break
+                    if "Height" in text:
+                        height_row = tr
 
                 if age_row:
                     hidden_tds = age_row.select("td.hidden")
                     left_age = parse_age(hidden_tds[0].get_text()) if len(hidden_tds) > 0 else None
                     right_age = parse_age(hidden_tds[1].get_text()) if len(hidden_tds) > 1 else None
 
-            fighter_one_id = lookup_fighter(session, left_name, left_age, event_date)
-            fighter_two_id = lookup_fighter(session, right_name, right_age, event_date)
+                if height_row:
+                    hidden_tds = height_row.select("td.hidden")
 
-            bouts.append(Bout(
-                # event_id is assigned by the loader after the Event is flushed
+            fighter_one_id = lookup_fighter(index, left_name, left_age, event_date, left_tapology_id)
+            fighter_two_id = lookup_fighter(index, right_name, right_age, event_date, right_tapology_id)
+                
+            event.bouts.append(Bout(
                 fighter_one=fighter_one_id,
                 fighter_one_age_at_bout=left_age,
                 fighter_two=fighter_two_id,
@@ -341,20 +429,23 @@ def parse_event(html_path: Path, session: Session) -> tuple[Event, list[Bout]]:
             logger.warning(f"  [WARN] Skipped bout {bout_id} for event {event_name}: {type(exc).__name__}: {exc}")
             continue
 
-    return event, bouts
+    return event
 
 
 # ── Aggregate parser ───────────────────────────────────────────────────────────
 
 
-def parse_all_events(session: Session) -> tuple[list[Event], list[Bout]]:
+def parse_all_events(session: Session) -> list[Event]:
     """
     Parse all event HTML files in EVENT_HTML_DIR.
-    Returns a tuple of (all_events, all_bouts).
+    Returns a list of Event objects, each with their bouts attached via event.bouts.
     """
     all_events: list[Event] = []
-    all_bouts: list[Bout] = []
     failed_files: list[tuple[str, str]] = []
+
+    logger.info("Building fighter index from database...")
+    fighter_index = build_fighter_index(session)
+    logger.info(f"Fighter index built: {len(fighter_index)} unique names loaded.")
 
     logger.info(f"Starting to parse files from: {EVENT_HTML_DIR}")
     logger.info("=" * 72)
@@ -363,11 +454,10 @@ def parse_all_events(session: Session) -> tuple[list[Event], list[Bout]]:
         if file.is_file() and file.suffix == ".html":
             try:
                 logger.info(f"Currently parsing: {file.name}")
-                event, bouts = parse_event(file, session)
+                event = parse_event(file, fighter_index)
 
                 all_events.append(event)
-                all_bouts.extend(bouts)
-                logger.info(f"✓ Successfully parsed {len(bouts)} bouts from: {file.name}")
+                logger.info(f"✓ Successfully parsed {len(event.bouts)} bouts from: {file.name}")
 
             except Exception as exc:
                 failed_files.append((file.name, f"{type(exc).__name__}: {exc}"))
@@ -380,8 +470,9 @@ def parse_all_events(session: Session) -> tuple[list[Event], list[Bout]]:
     logger.info(f"Total files processed: {len(all_events) + len(failed_files)}")
     logger.info(f"Successfully parsed: {len(all_events)} files")
     logger.info(f"Failed: {len(failed_files)} files")
+    total_bouts = sum(len(e.bouts) for e in all_events)
     logger.info(f"Total events parsed: {len(all_events)}")
-    logger.info(f"Total bouts parsed: {len(all_bouts)}")
+    logger.info(f"Total bouts parsed: {total_bouts}")
 
     if failed_files:
         logger.info("Failed files:")
@@ -390,13 +481,13 @@ def parse_all_events(session: Session) -> tuple[list[Event], list[Bout]]:
 
     logger.info("=" * 72)
 
-    return all_events, all_bouts
+    return all_events
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     with get_db_session() as session:
-        events, bouts = parse_all_events(session)
+        events = parse_all_events(session)
         session.commit()
     

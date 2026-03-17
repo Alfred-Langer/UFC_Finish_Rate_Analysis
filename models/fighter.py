@@ -16,6 +16,10 @@ class Fighter(Base):
     sex = Column(String(2), nullable=False, default="M")
     date_of_birth = Column(Date, nullable=True)
     age = Column(Integer, nullable=True)  # May not always have the fighter's age
+    date_of_death = Column(Date, nullable=True)
+    height = Column(Float, nullable=True)   # total inches (e.g. 71.0 = 5'11")
+    reach  = Column(Float, nullable=True)   # inches
+    tapology_id = Column(Integer, nullable=True)  # Unique identifier from Tapology database
 
     # Record
     wins = Column(Integer, nullable=False)
@@ -25,6 +29,10 @@ class Fighter(Base):
     number_of_total_bouts = Column(Integer, nullable=False)
     latest_bout_date = Column(Date, nullable=True)
 
+    # Flag for fighters with bouts under non-unified rules
+    # Fights where the round format was not 3x5, 2x5, or 5x5
+    has_non_unified_rules_bouts = Column(Boolean, nullable=False, default=False)
+    
     # Stats
     overall_finish_rate = Column(Float, nullable=False)
 
@@ -34,6 +42,9 @@ class Fighter(Base):
         CheckConstraint("sex IN ('M', 'F', 'NA')", name='check_sex_valid'),
         CheckConstraint("date_of_birth IS NULL OR date_of_birth >= '1900-01-01'", name='check_dob_lower_bound'),
         CheckConstraint('age IS NULL OR age >= 16', name='check_age_minimum'),
+        CheckConstraint('height IS NULL OR (height >= 48.0 AND height <= 96.0)', name='check_height_range'),
+        CheckConstraint('reach  IS NULL OR (reach  >= 48.0 AND reach  <= 96.0)', name='check_reach_range'),
+        CheckConstraint('tapology_id IS NULL OR tapology_id > 0', name='check_tapology_id_positive'),
 
         # Record constraints
         CheckConstraint('wins >= 0', name='check_wins_non_negative'),
@@ -95,6 +106,12 @@ class Fighter(Base):
             raise ValueError("Fighter age must be at least 16 or None if age is unknown")
         return value
 
+    @validates('height', 'reach')
+    def validate_height_reach(self, key, value):
+        if value is not None and not (48.0 <= value <= 96.0):
+            raise ValueError(f"{key} must be between 48.0 and 96.0 inches, or None")
+        return value
+
     # Python-level validation — Record
     @validates('number_of_total_bouts', 'wins', 'losses', 'draws', 'no_contests')
     def validate_non_negative(self, key, value):
@@ -107,6 +124,13 @@ class Fighter(Base):
     def validate_finish_rate(self, key, value):
         if value < 0.0 or value > 1.0:
             raise ValueError("overall_finish_rate must be between 0.0 and 1.0")
+        return value
+    
+    # Python-level validation — Tapology ID
+    @validates('tapology_id')
+    def validate_tapology_id(self, key, value):
+        if value is not None and value <= 0:
+            raise ValueError("tapology_id must be a positive integer or None")
         return value
 
     def __repr__(self):

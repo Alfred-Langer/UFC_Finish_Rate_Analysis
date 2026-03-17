@@ -1,12 +1,12 @@
 import os
 from dotenv import load_dotenv
+from pathlib import Path
 
 load_dotenv()
 DATABASE_URL: str|None = os.getenv("DATABASE_URL")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
-# config.py
-from pathlib import Path
+
 
 BASE_DIR = Path(__file__).resolve().parent
 

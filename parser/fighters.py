@@ -12,16 +12,28 @@ import logging
 import re
 from datetime import date, datetime
 from pathlib import Path
-
+from typing import List
+import requests
+from unidecode import unidecode
 from bs4 import BeautifulSoup
 
 from config import FIGHTER_HTML_DIR
+from parser.constants import SEX_OVERRIDES
 from models.fighter import Fighter
 
 logger = logging.getLogger(__name__)
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+def parse_tapology_id(html_path:str) -> int|None:
+    #Extracts file name from the full path
+    html_file_name = Path(html_path).name
+
+    id, file_name = html_file_name.split("-",maxsplit=1)
+    if id.isdigit():
+        return int(id)
+    else:
+        return None
 
 def parse_sex(soup) -> str:
     """
@@ -30,13 +42,55 @@ def parse_sex(soup) -> str:
 
     Returns 'M', 'F', or 'NA' if neither substring is found.
     """
+
+    #Initial method for parsing the gender of the fighter
+    """Typicaly if the fighter is ranked or fought a ranked opponent, there will be a link to the championship division they are in which contains either 
+    "championship-mens" or "championship-womens" in the href attribute which is a very strong signal of the fighter"""
+
     for a in soup.select("a[href]"):
         href = a.get("href", "")
         if "championship-womens" in href:
             return "F"
         if "championship-mens" in href:
             return "M"
-    return "NA"
+
+    #Secondary method for parsing the gender of the fighter
+    """Most fighter pages contain a meta description tag that contains the words "mens" or "womens" which is another strong
+    indicator of the fighter's sex"""
+
+    description_meta_tag = soup.select_one('meta[name="description"]')
+    if "womens" in description_meta_tag.get("content", "").lower():
+        return "F"
+    elif "mens" in description_meta_tag.get("content", "").lower():
+        return "M"
+    
+    #If we stil can't determine we can try to find a link to the fighter's combat registry page and scrape it there
+    return search_combat_registry_for_sex(soup)
+
+def search_combat_registry_for_sex(soup) -> str:
+    """
+    Searches the page for a link to combatreg.com and if found, scrapes the linked page for the fighter's sex.
+    This is a backup method for determining
+    """
+
+    combat_registry_element = soup.select_one("a[href*='combatreg.com/fighters/']")
+    if combat_registry_element:
+        combat_registry_url = combat_registry_element.get("href")
+        try:
+            response = requests.get(combat_registry_url)
+            response.raise_for_status()
+
+            # Extract sex information from the combat registry page
+            # Implementation for extracting sex from combat_soup would go here
+            combat_soup = BeautifulSoup(response.text, "lxml")
+            gender_span = combat_soup.select_one('span[itemprop="gender"]')
+            if gender_span:
+                return gender_span.get_text(strip=True)[0].upper()
+            
+        except requests.RequestException as e:
+            logger.warning(f"Error occurred while fetching combat registry page: {e}")
+    
+    return "NA"  # Default to 'NA' if we can't determine the fighter's sex
 
 
 def parse_nick_name(text: str | None) -> str:
@@ -50,43 +104,51 @@ def parse_nick_name(text: str | None) -> str:
     return name if name and name != "N/A" else ""
 
 
-def parse_record(text: str | None) -> tuple[int, int, int, int, int]:
-    """'Pro MMA Record: 22-3-0, 1 NC (Win-Loss-Draw)' → (22, 3, 0, 1, 26)"""
+def parse_record(text: str | None) -> tuple[int, int, int, int]:
+    """'Pro MMA Record: 22-3-0, 1 NC (Win-Loss-Draw)' → (22, 3, 0, 26)"""
     if not text:
-        return (0, 0, 0, 0, 0)
+        return (0, 0, 0, 0)
 
     m = re.search(r"(\d+)-(\d+)-(\d+)(?:,\s*(\d+)\s*NC)?", text)
     if not m:
-        return (0, 0, 0, 0, 0)
+        return (0, 0, 0, 0)
 
     wins, losses, draws = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    no_contests = int(m.group(4)) if m.group(4) else 0
-    number_of_bouts = wins + losses + draws + no_contests
-    return (wins, losses, draws, no_contests, number_of_bouts)
+    number_of_bouts = wins + losses + draws
+    return (wins, losses, draws, number_of_bouts)
 
 
-def parse_age_and_dob(text: str | None) -> tuple[int | None, date | None]:
+def parse_age_and_dob(text: str | None) -> tuple[int | None, date | None, date | None]:
     """
     'Age: 46 | Date of Birth: 1979 Mar 20' → (46, date(1979, 3, 20))
     'Age: N/A | Date of Birth: 1979 Mar 20' → (None, date(1979, 3, 20))
     'Age: 46 | Date of Birth: N/A'          → (46, None)
     'Age: N/A | Date of Birth: N/A'         → (None, None)
+    'Date of Birth: 1977 Apr 04 | Died: 2022 Dec 22 (age 45)'
     """
     if not text:
         return (None, None)
 
     age_match = re.search(r"Age:\s*(\d+|N/A)", text)
+    died_age_match = re.search(r"\(age\s+(\d+)\)", text)
     dob_match = re.search(r"Date of Birth:\s*(\d{4}\s+\w+\s+\d{1,2}|N/A)", text)
+    died_match = re.search(r"Died:\s*(\d{4}\s+\w+\s+\d{1,2})", text)
 
     age = None
     if age_match and age_match.group(1) != "N/A":
         age = int(age_match.group(1))
+    elif died_age_match:
+        age = int(died_age_match.group(1))
 
     dob = None
     if dob_match and dob_match.group(1) != "N/A":
         dob = datetime.strptime(dob_match.group(1).strip(), "%Y %b %d").date()
 
-    return (age, dob)
+    date_of_death = None
+    if died_match:
+        date_of_death = datetime.strptime(died_match.group(1).strip(), "%Y %b %d").date()
+
+    return (age, dob, date_of_death)
 
 
 def parse_last_fight_date(text: str | None) -> date | None:
@@ -128,6 +190,91 @@ def parse_height_and_reach(text: str | None) -> tuple[float | None, float | None
 
     return (height, reach)
 
+def parse_mma_record_of_boxer(mma_divs:List) -> tuple[int, int, int, int, int, List, bool]:
+    wins = losses = draws = no_contests = number_of_bouts = 0
+    valid_mma_bout_divs = []
+    non_unified_rules_bouts_detected = False
+
+    for div in mma_divs:
+        status_of_fight = div.get("data-status")
+        has_record = div.select_one("span[title='Fighter Record Before Fight']")
+
+        if not has_record:
+            continue
+
+        duration_label = div.select_one("span.font-bold.mr-2")
+        if duration_label and duration_label.get_text(strip=True) == "Duration:":
+            duration_span = duration_label.find_next_sibling("span")
+            if duration_span:
+                duration_text = duration_span.get_text(strip=True)
+                if duration_text not in UNIFIED_RULES_DURATIONS:
+                    non_unified_rules_bouts_detected = True
+
+        if status_of_fight == "win":
+            wins += 1
+            number_of_bouts +=1
+
+        elif status_of_fight == "loss":
+            losses += 1
+            number_of_bouts +=1
+
+        elif status_of_fight == "draw":
+            draws += 1
+            number_of_bouts +=1
+
+        elif status_of_fight == "no contest":
+            no_contests += 1
+
+        if status_of_fight not in ("cancelled", "upcoming", "unknown"):
+            valid_mma_bout_divs.append(div)
+
+    return wins, losses, draws, no_contests, number_of_bouts, valid_mma_bout_divs, non_unified_rules_bouts_detected
+
+UNIFIED_RULES_DURATIONS = {"3 x 5 Minute Rounds", "2 x 5 Minute Rounds", "5 x 5 Minute Rounds"}
+
+def verify_mma_record_of_mma_fighter(mma_divs:List,
+                                    number_of_bouts:int,
+                                    name:str) -> tuple[bool, int, List, bool]:
+    valid_mma_bout_divs = []
+    mma_bout_no_contest_divs = []
+    non_unified_rules_bouts_detected = False
+
+    for div in mma_divs:
+        status_of_fight = div.get("data-status")
+        has_record = div.select_one("span[title='Fighter Record Before Fight']")
+
+        if not has_record:
+            continue
+
+        duration_label = div.select_one("span.font-bold.mr-2")
+        if duration_label and duration_label.get_text(strip=True) == "Duration:":
+            duration_span = duration_label.find_next_sibling("span")
+            if duration_span:
+                duration_text = duration_span.get_text(strip=True)
+                if duration_text not in UNIFIED_RULES_DURATIONS:
+                    non_unified_rules_bouts_detected = True
+
+        if status_of_fight == "no contest":
+            mma_bout_no_contest_divs.append(div)
+
+        elif status_of_fight not in ("cancelled", "upcoming", "unknown"):
+            valid_mma_bout_divs.append(div)
+
+    #We parse the no contests here because for some reason Tapology doesn't always put No Contests in the record listed in Fighter Details
+    #Ex. Holly Holm doesn't have her No contest listed in her record for some reason
+    no_contests = len(mma_bout_no_contest_divs)
+
+    if len(valid_mma_bout_divs) != number_of_bouts:
+        logger.warning(
+            f"MMA bout div count ({len(valid_mma_bout_divs)}) does not match record ({number_of_bouts}) for: {name}"
+        )
+        for mma_bout_div in valid_mma_bout_divs:
+            record_span = mma_bout_div.select_one("span[title='Fighter Record Before Fight']")
+            if record_span:
+                logger.warning(f"  - Found bout with fighters: {record_span.get_text()}")
+
+    else:
+        return (True, no_contests, valid_mma_bout_divs, non_unified_rules_bouts_detected)
 
 # ── Main parser ────────────────────────────────────────────────────────────────
 
@@ -138,6 +285,9 @@ def parse_fighter_profile(html_path: Path) -> tuple[Fighter, int]:
 
     with open(html_path, "r", encoding="utf-8") as f:
         soup = BeautifulSoup(f, "lxml")
+
+    #Extract Tapology ID from URL in canonical link tag
+    tapology_id = parse_tapology_id(str(html_path))
 
     # Extract Fighter Name
     header = soup.select_one("div#fighterPageHeader")
@@ -152,7 +302,7 @@ def parse_fighter_profile(html_path: Path) -> tuple[Fighter, int]:
 
     if name_div is None:
         raise ValueError(f"Could not locate the name of the MMA Fighter profile: {html_path}")
-    name = name_div.get_text(strip=True)
+    name = unidecode(name_div.get_text(strip=True))
 
     # ── Standard Fighter Details Metadata ──────────────────────────────
     fighter_details_div = soup.select_one("div#standardDetails")
@@ -173,19 +323,25 @@ def parse_fighter_profile(html_path: Path) -> tuple[Fighter, int]:
 
     # Extract and Parse MMA Record
     record_div = None
+    not_a_boxer = True
     for div in fighter_details_div.select("div.items-center"):
         if "MMA Record" in div.get_text():
             record_div = div
             break
+        if "Pro Boxing Record" in div.get_text():
+            print("Boxer Identified")
+            not_a_boxer = False
+            break
 
-    if record_div is None:
+    if record_div is None and not_a_boxer:
         raise ValueError(f"Could not locate the record of the MMA Fighter profile: {html_path}")
-    wins, losses, draws, no_contests, number_of_bouts = parse_record(record_div.get_text())
+    elif not_a_boxer:
+        wins, losses, draws, number_of_bouts = parse_record(record_div.get_text())
 
     # Extract and Parse Age, Date of Birth, Height, and Reach
     age_height_dob_reach_div = fighter_details_div.select_one("div#standardDetailsHeightAge")
 
-    age, date_of_birth = (None, None)
+    age, date_of_birth, date_of_death = (None, None, None)
     height, reach = (None, None)
 
     if age_height_dob_reach_div:
@@ -193,13 +349,13 @@ def parse_fighter_profile(html_path: Path) -> tuple[Fighter, int]:
         height_div = None
         for div in age_height_dob_reach_div.select("div.flex"):
             text = div.get_text()
-            if "Age" in text and age_div is None:
+            if "age" in text.lower() and age_div is None:
                 age_div = div
             if "Height" in text and height_div is None:
                 height_div = div
 
         if age_div:
-            age, date_of_birth = parse_age_and_dob(age_div.get_text())
+            age, date_of_birth, date_of_death = parse_age_and_dob(age_div.get_text())
         else:
             logger.warning(f"Could not locate Age for MMA Fighter profile: {html_path}")
             warnings += 1
@@ -225,25 +381,23 @@ def parse_fighter_profile(html_path: Path) -> tuple[Fighter, int]:
         warnings += 1
 
     # Extract all MMA Bout divs and compute finish rate
-    all_bout_divs = soup.select("div[data-sport='mma'][data-division='pro']")
-    mma_bout_divs = [
-        div for div in all_bout_divs
-        if div.get("data-status") not in ("cancelled", "upcoming")
-        and div.select_one("span[title='Fighter Record Before Fight']")
-    ]
+    mma_bout_divs = soup.select("div[data-sport='mma'][data-division='pro']")
 
-    if len(mma_bout_divs) != number_of_bouts:
-        logger.warning(
-            f"MMA bout div count ({len(mma_bout_divs)}) does not match record ({number_of_bouts}) for: {name}"
-        )
-        for mma_bout_div in mma_bout_divs:
-            record_span = mma_bout_div.select_one("span[title='Fighter Record Before Fight']")
-            if record_span:
-                logger.warning(f"  - Found bout with fighters: {record_span.get_text()}")
-        warnings += 1
+    #Parsing the MMA Bouts of an MMA Fighter
+    if not_a_boxer:
+        success, no_contests, valid_mma_bout_divs, non_unified_rules_bouts_detected = verify_mma_record_of_mma_fighter(
+                                                            mma_bout_divs,
+                                                            number_of_bouts,
+                                                            name)
+        if not success:
+            warnings += 1
+
+    #Parsing the MMA Bouts of a Boxer (They primarily boxed but they occasionally fought MMA)
+    else:
+        wins, losses, draws, no_contests, number_of_bouts, valid_mma_bout_divs, non_unified_rules_bouts_detected = parse_mma_record_of_boxer(mma_bout_divs)
 
     num_finish_victories = 0
-    for mma_bout_div in mma_bout_divs:
+    for mma_bout_div in valid_mma_bout_divs:
         win_div = mma_bout_div.select_one("div[data-status='win']")
         if not win_div:
             continue
@@ -260,6 +414,8 @@ def parse_fighter_profile(html_path: Path) -> tuple[Fighter, int]:
 
     # Determine sex from championship href substrings
     sex = parse_sex(soup)
+    if sex == "NA" and tapology_id in SEX_OVERRIDES:
+        sex = SEX_OVERRIDES[tapology_id]
 
     return Fighter(
         name=name,
@@ -268,13 +424,18 @@ def parse_fighter_profile(html_path: Path) -> tuple[Fighter, int]:
         sex=sex,
         age=age,
         date_of_birth=date_of_birth,
+        date_of_death=date_of_death,
+        height=height,
+        reach=reach,
         number_of_total_bouts=number_of_bouts,
         wins=wins,
         losses=losses,
         draws=draws,
         no_contests=no_contests,
+        has_non_unified_rules_bouts=non_unified_rules_bouts_detected,
         overall_finish_rate=finish_rate,
         latest_bout_date=latest_bout_date,
+        tapology_id=tapology_id
     ), warnings
 
 

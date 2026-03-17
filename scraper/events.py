@@ -47,9 +47,9 @@ def obtain_ufc_event_names():
             past_events_table = page.locator("table#Past_events")
 
             ufc_event_a_tags = past_events_table.locator("td a", has_text="UFC", has_not_text="Apex").all()
+            tuf_event_a_tags = past_events_table.locator("td a", has_text="The Ultimate Fighter").all()
 
-            ufc_event_names = [normalize_ufc_event_name(tag.inner_text()) for tag in ufc_event_a_tags]
-            #ufc_event_names = [tag.inner_text() for tag in ufc_event_a_tags]
+            ufc_event_names = [tag.inner_text() for tag in (ufc_event_a_tags + tuf_event_a_tags)]
 
             EVENT_NAMES_FILE.parent.mkdir(parents=True, exist_ok=True)
 
@@ -88,12 +88,12 @@ def search_event_tapology():
         browser, page = create_browser_context(p)
 
         for i, event in enumerate(ufc_events):
-            logger.info(f"Processing {i+1}/{len(ufc_events)}: {event}")
-            time.sleep(DELAY_BETWEEN_SEARCHES + random.randint(0,3))
             
             event_search_attempts = 0
             while event_search_attempts < 3:
                 try:
+                    logger.info(f"Processing {i+1}/{len(ufc_events)}: {event}")
+                    time.sleep(DELAY_BETWEEN_SEARCHES + random.randint(0,3))
                     if ":" in event:
                         event_num, event_title = event.split(": ", maxsplit=1)
                     else:
@@ -199,8 +199,24 @@ def save_event_details_to_html(page, link, event, fighter_urls, webhook):
     try:
         link.click()
         page.wait_for_load_state("domcontentloaded")
-        page.evaluate("() => { document.querySelectorAll('script').forEach(el => el.remove()); }")
-        content = page.content()
+
+        #Javascript thatruns within the Playwright browser
+        #It allows us to only extract and save the HTML elements containing info that we need for parsing
+        content = page.evaluate("""() => {
+            const ids = ['primaryDetailsContainer', 'sectionFightCard'];
+            const elements = ids.map(id => document.getElementById(id)).filter(Boolean);
+            elements.forEach(el => {
+                el.querySelectorAll('script, svg').forEach(tag => tag.remove());
+            });
+
+            // Collect h2 elements not already inside the two divs to avoid duplication
+            const h2s = Array.from(document.querySelectorAll('h2')).filter(
+                h2 => !elements.some(el => el.contains(h2))
+            );
+
+            const html = [...h2s, ...elements].map(el => el.outerHTML).join('\\n');
+            return `<html><body>\\n${html}\\n</body></html>`;
+        }""")
 
         safe_event_name = event.replace(":", "")
         EVENT_HTML_DIR.mkdir(parents=True, exist_ok=True)

@@ -45,11 +45,11 @@ def setup_logging() -> None:
 def run_scraping() -> bool:
     logger.info("=== Phase 1: Scraping ===")
     try:
-        # logger.info("Scraping UFC event names from Wikipedia...")
-        # se.obtain_ufc_event_names()
+        logger.info("Scraping UFC event names from Wikipedia...")
+        se.obtain_ufc_event_names()
 
-        # logger.info("Scraping event details from Tapology...")
-        # se.search_event_tapology()
+        logger.info("Scraping event details from Tapology...")
+        se.search_event_tapology()
 
         logger.info("Scraping fighter profiles from Tapology...")
         sf.search_fighter_tapology()
@@ -85,12 +85,12 @@ def run_events() -> bool:
     try:
         logger.info("Parsing events and bouts (with fighter lookups)...")
         with get_db_session() as session:
-            events, bouts = pe.parse_all_events(session)
-            logger.info(f"Parsed {len(events)} events and {len(bouts)} bouts.")
+            events = pe.parse_all_events(session)
+            total_bouts = sum(len(e.bouts) for e in events)
+            logger.info(f"Parsed {len(events)} events and {total_bouts} bouts.")
 
             logger.info("Loading events and bouts into database...")
             dl.load_events(session, events)
-            dl.load_bouts(session, bouts)
             session.commit()
 
         logger.info("Events & bouts phase complete.")
@@ -106,6 +106,7 @@ def run_pipeline() -> bool:
     if not run_scraping():
         logger.error("Pipeline aborted: scraping phase failed.")
         return False
+
     if not run_fighters():
         logger.error("Pipeline aborted: fighters phase failed.")
         return False
