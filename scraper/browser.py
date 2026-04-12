@@ -105,4 +105,4 @@ def create_session(session_index:int = 0):
     session = requests.Session()
     session.headers.update(context["headers"])
     session.get("https://www.tapology.com", impersonate=context["impersonate"])
-    return session, context
+    return session, session_index + 1

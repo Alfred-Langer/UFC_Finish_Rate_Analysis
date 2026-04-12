@@ -4,7 +4,7 @@ from curl_cffi import CurlError, requests
 from unidecode import unidecode
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright, Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
-from urllib.parse import quote, quote_plus
+from urllib.parse import quote_plus
 from scraper.browser import create_browser_context, recover_browser, create_session
 from scraper.constants import EVENT_TOKEN_REPLACEMENTS, EVENT_OVERRIDE_REPLACEMENTS, EXCLUDED_EVENTS
 import time
