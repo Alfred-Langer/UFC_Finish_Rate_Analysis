@@ -210,6 +210,10 @@ __marimo__/
 # Local HTML files and text files containing links
 *.html
 ufc_*.txt
+events_backup
+
+#Test files
+*_test.py
 
 # Miscellaneous files for testing and development
 utils/misc
