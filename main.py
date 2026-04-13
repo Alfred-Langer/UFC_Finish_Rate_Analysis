@@ -2,13 +2,13 @@ import logging
 import sys
 from pathlib import Path
 
-from db.init_db import init_db
-import db.loader as dl
-import parser.events as pe
-import parser.fighters as pf
+#from db.init_db import init_db
+#import db.loader as dl
+#import parser.events as pe
+#import parser.fighters as pf
 import scraper.events as se
 import scraper.fighters as sf
-from db.session import get_db_session
+#from db.session import get_db_session
 
 logger = logging.getLogger(__name__)
 
@@ -61,43 +61,43 @@ def run_scraping() -> bool:
         return False
 
 
-def run_fighters() -> bool:
-    logger.info("=== Phase 2: Fighters ===")
-    try:
-        logger.info("Parsing fighter profiles...")
-        fighters = pf.parse_all_fighters()
-        logger.info(f"Parsed {len(fighters)} fighters.")
+# def run_fighters() -> bool:
+#     logger.info("=== Phase 2: Fighters ===")
+#     try:
+#         logger.info("Parsing fighter profiles...")
+#         fighters = pf.parse_all_fighters()
+#         logger.info(f"Parsed {len(fighters)} fighters.")
 
-        logger.info("Loading fighters into database...")
-        with get_db_session() as session:
-            dl.load_fighters(session, fighters)
-            session.commit()
+#         logger.info("Loading fighters into database...")
+#         with get_db_session() as session:
+#             dl.load_fighters(session, fighters)
+#             session.commit()
 
-        logger.info("Fighters phase complete.")
-        return True
-    except Exception:
-        logger.exception("Fighters phase failed.")
-        return False
+#         logger.info("Fighters phase complete.")
+#         return True
+#     except Exception:
+#         logger.exception("Fighters phase failed.")
+#         return False
 
 
-def run_events() -> bool:
-    logger.info("=== Phase 3: Events & Bouts ===")
-    try:
-        logger.info("Parsing events and bouts (with fighter lookups)...")
-        with get_db_session() as session:
-            events = pe.parse_all_events(session)
-            total_bouts = sum(len(e.bouts) for e in events)
-            logger.info(f"Parsed {len(events)} events and {total_bouts} bouts.")
+# def run_events() -> bool:
+#     logger.info("=== Phase 3: Events & Bouts ===")
+#     try:
+#         logger.info("Parsing events and bouts (with fighter lookups)...")
+#         with get_db_session() as session:
+#             events = pe.parse_all_events(session)
+#             total_bouts = sum(len(e.bouts) for e in events)
+#             logger.info(f"Parsed {len(events)} events and {total_bouts} bouts.")
 
-            logger.info("Loading events and bouts into database...")
-            dl.load_events(session, events)
-            session.commit()
+#             logger.info("Loading events and bouts into database...")
+#             dl.load_events(session, events)
+#             session.commit()
 
-        logger.info("Events & bouts phase complete.")
-        return True
-    except Exception:
-        logger.exception("Events & bouts phase failed.")
-        return False
+#         logger.info("Events & bouts phase complete.")
+#         return True
+#     except Exception:
+#         logger.exception("Events & bouts phase failed.")
+#         return False
 
 
 def run_pipeline() -> bool:
@@ -107,13 +107,13 @@ def run_pipeline() -> bool:
         logger.error("Pipeline aborted: scraping phase failed.")
         return False
 
-    if not run_fighters():
-        logger.error("Pipeline aborted: fighters phase failed.")
-        return False
+    #if not run_fighters():
+    #    logger.error("Pipeline aborted: fighters phase failed.")
+    #    return False
 
-    if not run_events():
-        logger.error("Pipeline aborted: events & bouts phase failed.")
-        return False
+    #if not run_events():
+    #    logger.error("Pipeline aborted: events & bouts phase failed.")
+    #    return False
 
     logger.info("Pipeline completed successfully.")
     return True
@@ -121,6 +121,6 @@ def run_pipeline() -> bool:
 
 if __name__ == "__main__":
     setup_logging()
-    init_db()
+    #init_db()
     success = run_pipeline()
     sys.exit(0 if success else 1)

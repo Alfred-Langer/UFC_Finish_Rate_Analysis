@@ -13,10 +13,10 @@ import random
 
 logger = logging.getLogger(__name__)
 
-DELAY_BETWEEN_SEARCHES = 10
+DELAY_BETWEEN_SEARCHES = 4
 REQUEST_TIMEOUT_ERROR_CODE = 28
 MEMORY_CRASH_ERROR_CODE = 27
-SESSION_COUNTER = 0
+
 
 def normalize_ufc_event_name(event_name):
     for find, replace in EVENT_OVERRIDE_REPLACEMENTS:
@@ -82,17 +82,18 @@ def search_event_tapology():
     DISCORD_WEBHOOK = DiscordWebhook(url=DISCORD_WEBHOOK_URL)
     ufc_events = []
     fighter_urls = {}  # url → event name (first event seen wins)
+    session_counter = 0
 
     with open(EVENT_NAMES_FILE, "r",encoding="utf-8") as f:
         ufc_events = [normalize_ufc_event_name(line.strip()) for line in f.readlines()]
 
-    session = create_session()
+    session, session_counter= create_session(session_counter)
     for i, event in enumerate(ufc_events):
 
         #Recreate browser and page objects every 100 iterations to reset memory usage
         if i % 100 == 0 and i > 0:
             session.close()
-            session = create_session()
+            session, session_counter= create_session(session_counter)
         
         event_search_attempts = 0
         while event_search_attempts < 3:
@@ -126,22 +127,22 @@ def search_event_tapology():
 
                 error_message = f"Unhandled Request error for event: {event}\n{type(e).__name__}: {e}"
                 logger.error(error_message)
-                send_discord_fail_notifcation(DISCORD_WEBHOOK, f"SCRAPING_ERROR(Event): {error_message}")
+                #send_discord_fail_notifcation(DISCORD_WEBHOOK, f"SCRAPING_ERROR(Event): {error_message}")
                 event_search_attempts = 3
 
             #If we encounter any error, we recreate the session and pause for 1 minute before retrying the request.
             #We do this in hopes that if Tapology is blocking our requests temporarily, we can bypass the block by waiting and resetting our session.
             logger.info("Pausing for 1 minute before continuing with scrape")
-            time.sleep(60)
+            time.sleep(60 * 10)
             logger.info("Recreating browser...")
             session.close()
-            session = create_session()
+            session, session_counter= create_session(session_counter)
             continue
         
         if event_search_attempts >= 3:
             error_message = f"Our script was not able to successfully navigate to the event: {event} after 3 attempts. Skipping this event."
             logger.error(error_message)
-            send_discord_fail_notifcation(DISCORD_WEBHOOK, f"SCRAPING ERROR(Event): {error_message}")
+            #send_discord_fail_notifcation(DISCORD_WEBHOOK, f"SCRAPING ERROR(Event): {error_message}")
             log_failed_event(event)
             continue
         
@@ -155,7 +156,7 @@ def search_event_tapology():
         if len(event_links) == 0:
             error_message = f"No Tapology event <a> tags were found for: {event}. Skipping this event."
             logger.warning(error_message)
-            send_discord_fail_notifcation(DISCORD_WEBHOOK, f"SCRAPING ERROR(Event): {error_message}")
+            #send_discord_fail_notifcation(DISCORD_WEBHOOK, f"SCRAPING ERROR(Event): {error_message}")
             log_failed_event(event)
             continue
         
@@ -170,7 +171,7 @@ def search_event_tapology():
         else:
             error_message = f"Unable to find a Tapology <a> tag that matched with the event name: {event}. Skipping this event."
             logger.warning(error_message)
-            send_discord_fail_notifcation(DISCORD_WEBHOOK, f"SCRAPING ERROR(Event): {error_message}")
+            #send_discord_fail_notifcation(DISCORD_WEBHOOK, f"SCRAPING ERROR(Event): {error_message}")
             log_failed_event(event)
             continue
         
@@ -261,7 +262,7 @@ def save_event_details_to_html(session, link, event, fighter_urls, webhook):
     except Exception as e:
         error_message = f"An exception occured while attempting to save the details of the following event: {event}\n{type(e).__name__}-{e}"
         logger.warning(error_message)
-        send_discord_fail_notifcation(webhook, f"SCRAPING ERROR(Event): {error_message}")
+        #send_discord_fail_notifcation(webhook, f"SCRAPING ERROR(Event): {error_message}")
 
 if __name__ == "__main__":
     obtain_ufc_event_names()

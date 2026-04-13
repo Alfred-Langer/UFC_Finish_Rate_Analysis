@@ -10,7 +10,7 @@ import random
 
 logger = logging.getLogger(__name__)
 
-DELAY_BETWEEN_SEARCHES = 12
+DELAY_BETWEEN_SEARCHES = 4
 REQUEST_TIMEOUT_ERROR_CODE = 28
 MEMORY_CRASH_ERROR_CODE = 27
 session_counter = 0
@@ -97,6 +97,7 @@ def search_fighter_tapology():
     FIGHTER_PROFILE_URL_PREFIX = "https://www.tapology.com"
     DISCORD_WEBHOOK = DiscordWebhook(url=DISCORD_WEBHOOK_URL)
     fighter_profile_urls = []
+    session_counter = 0
 
     with open(FIGHTER_URLS_FILE, "r", encoding="utf-8") as f:
         fighter_profile_urls = [line.strip().split(" | ")[0] for line in f if line.strip()]
@@ -150,7 +151,7 @@ def search_fighter_tapology():
             time.sleep(60)
             logger.info("Recreating browser...")
             session.close()
-            session = create_session()
+            session, session_counter= create_session(session_counter)
             continue
 
         if fighter_search_attempts >= 3:
