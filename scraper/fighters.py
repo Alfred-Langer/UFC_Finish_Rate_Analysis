@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 from curl_cffi import CurlError
 from playwright.sync_api import sync_playwright, Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
 from discord_webhook import DiscordWebhook
+from models import fighter
 from scraper.browser import create_browser_context, create_session, recover_browser
 from config import FIGHTER_HTML_DIR, FIGHTER_URLS_FILE, FAILED_FIGHTER_URLS_FILE, DISCORD_WEBHOOK_URL
 import time
@@ -11,8 +12,9 @@ import random
 logger = logging.getLogger(__name__)
 
 DELAY_BETWEEN_SEARCHES = 4
-REQUEST_TIMEOUT_ERROR_CODE = 28
-MEMORY_CRASH_ERROR_CODE = 27
+#Request timeout, memory crash, and connection reset errors are the most common errors we encounter during scraping. 
+MINOR_ERROR_CODES = [28, 27, 55] #These are error codes that we consider to be minor and potentially recoverable with retries. 
+FORBIDDEN_ERROR_CODE = 403
 session_counter = 0
 
 def send_discord_fail_notifcation(webhook: DiscordWebhook, message: str):
@@ -98,67 +100,75 @@ def search_fighter_tapology():
     DISCORD_WEBHOOK = DiscordWebhook(url=DISCORD_WEBHOOK_URL)
     fighter_profile_urls = []
     session_counter = 0
+    session_context = None
 
     with open(FIGHTER_URLS_FILE, "r", encoding="utf-8") as f:
         fighter_profile_urls = [line.strip().split(" | ")[0] for line in f if line.strip()]
 
-    session, session_counter= create_session(session_counter)
+    session, session_counter, session_context = create_session(session_counter)
     for i, url in enumerate(fighter_profile_urls):
 
         #Recreate browser and page objects every 100 iterations to reset memory usage
         if i % 100 == 0 and i > 0:
             session.close()
-            session, session_counter= create_session(session_counter)
+            session, session_counter, session_context = create_session(session_counter)
 
 
         fighter_search_attempts = 0
         while fighter_search_attempts < 3:
-
+            
+            request_cooldown = 0
             #Navigate to Fighter Profile
             try:
                 logger.info(f"Processing {i+1}/{len(fighter_profile_urls)}: {url}")
                 time.sleep(DELAY_BETWEEN_SEARCHES + random.randint(0, 3))
 
                 
-                url = FIGHTER_PROFILE_URL_PREFIX  + url
-                response = session.get(url)
+                full_url = FIGHTER_PROFILE_URL_PREFIX  + url
+                response = session.get(full_url, impersonate=session_context)
                 
                 if response.status_code != 200:
-                    raise Exception(f"Received non-200 status code: {response.status_code} for fighter profile: {url}")
-                
-                break
+                    if response.status_code in MINOR_ERROR_CODES:
+                        logger.warning(f"Memory Crash or Request Timeout on fighter profile: {full_url}\nStatus Code: {response.status_code}")
+                        fighter_search_attempts += 1
+                        request_cooldown = 60
 
-            except CurlError as e:
-                #Typically the cause for an exception is a short timeout for requests from Tapology or a memory crash from the browser
-                if e.code == REQUEST_TIMEOUT_ERROR_CODE or e.code == MEMORY_CRASH_ERROR_CODE:
-                    logger.warning(f"Memory Crash or Request Timeout on fighter profile: {url}\n{type(e).__name__}: {e}")
-                    fighter_search_attempts += 1
+                    elif response.status_code == FORBIDDEN_ERROR_CODE:
+                        logger.warning(f"403 Forbidden error for fighter profile: {full_url}\nStatus Code: {response.status_code}")
+                        fighter_search_attempts += 1
+                        #If we receive a 403 error, we pause for 60 minutes before retrying the request in hopes that Tapology will lift the temporary block on our requests.
+                        request_cooldown = 3600
+                    
+                    else:
+                        raise Exception(f"Received non-200 status code: {response.status_code} for fighter profile: {full_url}")
 
-                #Unknown exception. Will have to inspect logs for further debugging
+                #If we receive a successful response, we break out of the retry loop and continue with parsing the fighter profile details
                 else:
-                    raise  # re-raise unexpected curl errors
+                    break
 
             except Exception as e:
 
-                error_message = f"Unhandled Request error for fighter profile: {url}\n{type(e).__name__}: {e}"
+                error_message = f"Request error for fighter profile: {full_url}\n{type(e).__name__}: {e}"
                 logger.error(error_message)
                 send_discord_fail_notifcation(DISCORD_WEBHOOK, f"SCRAPING_ERROR(Fighter): {error_message}")
                 fighter_search_attempts = 3
+                request_cooldown = 300
 
             #If we encounter any error, we recreate the session and pause for 1 minute before retrying the request.
             #We do this in hopes that if Tapology is blocking our requests temporarily, we can bypass the block by waiting and resetting our session.
-            logger.info("Pausing for 1 minute before continuing with scrape")
-            time.sleep(60)
+            logger.info(f"Pausing for {request_cooldown // 60} minutes before continuing with scrape")
+            time.sleep(request_cooldown)
             logger.info("Recreating browser...")
             session.close()
-            session, session_counter= create_session(session_counter)
+            session, session_counter, session_context = create_session(session_counter)
             continue
 
+
         if fighter_search_attempts >= 3:
-            error_message = f"Playwright was not able to successfully navigate to the fighter profile: {url} after 3 attempts. Skipping this fighter profile."
+            error_message = f"Request was not able to successfully navigate to the fighter profile: {full_url} after 3 attempts. Skipping this fighter profile."
             logger.error(error_message)
             send_discord_fail_notifcation(DISCORD_WEBHOOK, f"SCRAPING ERROR(Fighter): {error_message}")
-            log_failed_fighter(url)
+            log_failed_fighter(full_url)
             continue
 
         # Parse the HTML from your curl_cffi response
@@ -168,14 +178,14 @@ def search_fighter_tapology():
         #Verify that we successfully navigated to a MMA Fighter Profile
         fighter_profile_header = soup.select("div#fighterPageHeader")
 
-        if fighter_profile_header.count() <= 0:
+        if len(fighter_profile_header) <= 0:
             error_message = f"Beautiful Soup was not able to locate a MMA Fighter Profile Page Header for fighter url: {url} Skipping this fighter."
             logger.warning(error_message)
             send_discord_fail_notifcation(DISCORD_WEBHOOK, f"SCRAPING ERROR(Fighter): {error_message}")
-            log_failed_fighter(url)
+            log_failed_fighter(full_url)
             continue
 
-        save_fighter_details_to_html(response, url, DISCORD_WEBHOOK)
+        save_fighter_details_to_html(response, full_url, DISCORD_WEBHOOK)
 
     return True
 

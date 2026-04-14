@@ -178,17 +178,19 @@ def parse_weight_division(raw: str) -> str:
 # name → [(birth_year | None, fighter_id, tapology_id | None), ...]
 FighterIndex = dict[str, list[tuple[int | None, int, int | None]]]
 
-# Tapology sometimes displays abbreviated names on bout pages that differ from
-# the full name stored in the fighters table. Map each abbreviation to its full name.
+# Tapology sometimes displays abbreviated names or previous names of fighterson bout pages that differ from
+# the full name stored in the fighters table. We map each abbreviation/previous name to the correct name in our db.
 NAME_ALIASES: dict[str, str] = {
     "A. Nogueira":          "Antonio Rodrigo Nogueira",
     "A. Al-Selwady":        "Abdul-Kareem Al-Selwady",
+    "Ariane Lipski da Silva": "Ariane da Silva",
     "D. Silva de Andrade":  "Douglas Silva de Andrade",
     "E. Zaleski dos Santos": "Elizeu Zaleski dos Santos",
     "H. Brown Morrison":    "Humberto Brown Morrison",
     "M. Waterson-Gomez":    "Michelle Waterson-Gomez",
     "N. Tumendemberel":     "Nyamjargal Tumendemberel",
     "R. Sokoudjou":         "Rameau Thierry Sokoudjou",
+    "Silvana Gomez Juarez": "Silvana Gomez",
     "Ulka Sasaki":          "Yuta Sasaki",
 }
 

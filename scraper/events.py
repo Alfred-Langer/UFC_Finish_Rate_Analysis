@@ -83,17 +83,18 @@ def search_event_tapology():
     ufc_events = []
     fighter_urls = {}  # url → event name (first event seen wins)
     session_counter = 0
+    session_context = None
 
     with open(EVENT_NAMES_FILE, "r",encoding="utf-8") as f:
         ufc_events = [normalize_ufc_event_name(line.strip()) for line in f.readlines()]
 
-    session, session_counter= create_session(session_counter)
+    session, session_counter, session_context = create_session(session_counter)
     for i, event in enumerate(ufc_events):
 
         #Recreate browser and page objects every 100 iterations to reset memory usage
         if i % 100 == 0 and i > 0:
             session.close()
-            session, session_counter= create_session(session_counter)
+            session, session_counter, session_context = create_session(session_counter)
         
         event_search_attempts = 0
         while event_search_attempts < 3:
@@ -106,7 +107,7 @@ def search_event_tapology():
                     event_num, event_title = (None, event)
 
                 url = TAPOLOGY_TEMPLATE_EVENT_SEARCH_STRING.replace("@@@",quote_plus(event_title))
-                response = session.get(url, impersonate="chrome120")
+                response = session.get(url, impersonate=session_context)
                 
                 if response.status_code != 200:
                     raise Exception(f"Received non-200 status code: {response.status_code} for event: {event}")
@@ -136,7 +137,7 @@ def search_event_tapology():
             time.sleep(60 * 10)
             logger.info("Recreating browser...")
             session.close()
-            session, session_counter= create_session(session_counter)
+            session, session_counter, session_context = create_session(session_counter)
             continue
         
         if event_search_attempts >= 3:
@@ -167,7 +168,7 @@ def search_event_tapology():
         )
         
         if target_link:
-            save_event_details_to_html(session, target_link, event, fighter_urls, DISCORD_WEBHOOK)
+            save_event_details_to_html(session, target_link, event, fighter_urls, DISCORD_WEBHOOK, session_context)
         else:
             error_message = f"Unable to find a Tapology <a> tag that matched with the event name: {event}. Skipping this event."
             logger.warning(error_message)
@@ -213,13 +214,13 @@ def verify_tapology_link(event_num, event_title, link_text):
         and normalize_title(event_title) == normalize_title(link_sub_header)
     )
 
-def save_event_details_to_html(session, link, event, fighter_urls, webhook):
+def save_event_details_to_html(session, link, event, fighter_urls, webhook, session_context):
     try:
         href = link.get('href')
         base_url = "https://www.tapology.com"
         full_url = base_url + href if href.startswith('/') else href
         
-        response = session.get(full_url, impersonate="chrome120")
+        response = session.get(full_url, impersonate=session_context)
         if response.status_code != 200:
             raise Exception(f"Received non-200 status code: {response.status_code} for event: {event}")
 

@@ -13,7 +13,7 @@ import argparse
 import logging
 import sys
 
-#from main import run_scraping, run_fighters, run_events, setup_logging
+from main import run_scraping, run_fighters, run_events, setup_logging
 from main import run_scraping, setup_logging
 
 logger = logging.getLogger(__name__)
@@ -35,10 +35,10 @@ def main() -> None:
 
     if args.phase == "scrape":
         success = run_scraping()
-    #elif args.phase == "fighters":
-    #    success = run_fighters()
-    #elif args.phase == "events":
-    #    success = run_events()
+    elif args.phase == "fighters":
+       success = run_fighters()
+    elif args.phase == "events":
+       success = run_events()
 
     sys.exit(0 if success else 1)
 

@@ -68,41 +68,40 @@ def recover_browser(playwright, old_browser):
 
 contexts = (
     {
-        "impersonate": "chrome124",
+        "impersonate": "chrome131",
         "headers": {"Accept-Language": "en-US,en;q=0.9"},
-        "timezone": "America/New_York",
+        "timezone": "America/Phoenix",
     },
     {
-        "impersonate": "chrome123",
-        "headers": {"Accept-Language": "en-US,en;q=0.9"},
-        "timezone": "America/Chicago",
+        "impersonate": "chrome119",
+        "headers": {"Accept-Language": "en-AU,en;q=0.8"},
+        "timezone": "Australia/Sydney",
     },
     {
-        "impersonate": "firefox133",
+        "impersonate": "chrome116",
         "headers": {"Accept-Language": "en-GB,en;q=0.9"},
         "timezone": "Europe/London",
     },
     {
         "impersonate": "safari17_0",
-        "headers": {"Accept-Language": "en-US,en;q=0.9"},
-        "timezone": "America/Los_Angeles",
+        "headers": {"Accept-Language": "en-NZ,en;q=0.9"},
+        "timezone": "Pacific/Auckland",
     },
     {
-        "impersonate": "chrome124",
-        "headers": {"Accept-Language": "en-US,en;q=0.9"},
-        "timezone": "America/Denver",
+        "impersonate": "chrome107",
+        "headers": {"Accept-Language": "en-CA,en;q=0.8"},
+        "timezone": "America/Vancouver",
     },
     {
-        "impersonate": "edge101",
-        "headers": {"Accept-Language": "en-CA,en;q=0.9"},
-        "timezone": "America/Toronto",
+        "impersonate": "chrome110",
+        "headers": {"Accept-Language": "en-ZA,en;q=0.9"},
+        "timezone": "Africa/Johannesburg",
     },
 )
-
 
 def create_session(session_index:int = 0):
     context = contexts[session_index % len(contexts)]
     session = requests.Session()
     session.headers.update(context["headers"])
     session.get("https://www.tapology.com", impersonate=context["impersonate"])
-    return session, session_index + 1
+    return session, session_index + 1, context["impersonate"]
