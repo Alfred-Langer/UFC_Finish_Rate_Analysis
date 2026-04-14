@@ -226,6 +226,12 @@ def save_event_details_to_html(session, link, event, fighter_urls, webhook, sess
 
         soup = BeautifulSoup(response.text, 'html.parser')
 
+        # Verify this is a UFC event before saving
+        ufc_promo_link = soup.find("a", href="/fightcenter/promotions/1-ultimate-fighting-championship-ufc")
+        if not ufc_promo_link:
+            logger.warning(f"Event '{event}' does not appear to be a UFC event (UFC promotion link not found) — skipping.")
+            return
+
         # Replicate the JavaScript logic — extract primaryDetailsContainer and sectionFightCard
         ids = ['primaryDetailsContainer', 'sectionFightCard']
         elements = [soup.find(id=id) for id in ids]
