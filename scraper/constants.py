@@ -37,6 +37,7 @@ EXCLUDED_EVENTS = (
     "UFC Fight Night: Lamas vs. Penn",
     "UFC Fight Night: Hermansson vs. Weidman",
     "UFC 176: Aldo vs. Mendes 2",
+    "UFC 176: Aldo vs. Mendes II"
 )
 
 

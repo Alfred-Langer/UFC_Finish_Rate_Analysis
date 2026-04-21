@@ -14,7 +14,10 @@ logger = logging.getLogger(__name__)
 DELAY_BETWEEN_SEARCHES = 4
 #Request timeout, memory crash, and connection reset errors are the most common errors we encounter during scraping. 
 MINOR_ERROR_CODES = [28, 27, 55] #These are error codes that we consider to be minor and potentially recoverable with retries. 
-FORBIDDEN_ERROR_CODE = 403
+
+#403 and 503 errors are typically caused by Tapology temporarily blocking our requests. We consider these to be major errors
+#because they require a longer cooldown period and session reset in order to potentially bypass the block.
+MAJOR_ERROR_CODE = [503, 403]
 session_counter = 0
 
 def send_discord_fail_notifcation(webhook: DiscordWebhook, message: str):
@@ -24,76 +27,6 @@ def send_discord_fail_notifcation(webhook: DiscordWebhook, message: str):
 def log_failed_fighter(fighter_url):
         with open(FAILED_FIGHTER_URLS_FILE, "a", encoding="utf-8") as ffu:
             ffu.write(fighter_url + "\n")
-
-# def search_fighter_tapology():
-#     FIGHTER_PROFILE_URL_PREFIX = "https://www.tapology.com"
-#     DISCORD_WEBHOOK = DiscordWebhook(url=DISCORD_WEBHOOK_URL)
-#     fighter_profile_urls = []
-
-#     with open(FIGHTER_URLS_FILE, "r", encoding="utf-8") as f:
-#         fighter_profile_urls = [line.strip().split(" | ")[0] for line in f if line.strip()]
-
-#     #Create Playwright context manager and set it's alias to 'p'
-#     with sync_playwright() as p:
-
-#         #Launch chromium, assign it's reference to 'browser' and open a new page
-#         browser, page = create_browser_context(p)
-
-#         for i, url in enumerate(fighter_profile_urls):
-#             logger.info(f"Processing {i+1}/{len(fighter_profile_urls)}: {url}")
-#             time.sleep(DELAY_BETWEEN_SEARCHES + random.randint(0, 3))
-
-#             fighter_search_attempts = 0
-#             while fighter_search_attempts < 3:
-
-#                 #Navigate to Fighter Profile
-#                 try:
-#                     page.goto(FIGHTER_PROFILE_URL_PREFIX + url)
-#                     break
-#                 except Exception as e:
-
-#                     #Typically the cause for an exception is a short timeout for requests from Tapology or a memory crash from the browser
-#                     if isinstance(e, PlaywrightTimeoutError) or "Page crashed" in str(e):
-#                         logger.warning(f"Memory Crash or Request Timeout on fighter: {url}\n{type(e).__name__}: {e}")
-#                         fighter_search_attempts += 1
-
-#                     #Unknown exception. Will have to inspect logs for further debugging
-#                     else:
-#                         error_message = f"Unhandled Playwright error for event: {url}\n{type(e).__name__}: {e}"
-#                         logger.error(error_message)
-#                         send_discord_fail_notifcation(DISCORD_WEBHOOK, f"SCRAPING_ERROR(Fighter): {error_message}")
-#                         fighter_search_attempts = 3
-
-#                     logger.info("Pausing for 1 minute before continuing with scrape")
-#                     time.sleep(60)
-#                     logger.info("Recreating browser...")
-#                     browser, page = recover_browser(p, browser)
-#                     continue
-
-#             if fighter_search_attempts >= 3:
-#                 error_message = f"Playwright was not able to successfully navigate to the fighter profile: {url} after 3 attempts. Skipping this fighter profile."
-#                 logger.error(error_message)
-#                 send_discord_fail_notifcation(DISCORD_WEBHOOK, f"SCRAPING ERROR(Fighter): {error_message}")
-#                 log_failed_fighter(url)
-#                 continue
-
-#             #Verify that we successfully navigated to a MMA Fighter Profile
-#             fighter_profile_header = page.locator("div#fighterPageHeader")
-
-#             if fighter_profile_header.count() <= 0:
-#                 error_message = f"Playwright was not able to locate a MMA Fighter Profile Page Header for fighter url: {url} Skipping this fighter."
-#                 logger.warning(error_message)
-#                 send_discord_fail_notifcation(DISCORD_WEBHOOK, f"SCRAPING ERROR(Fighter): {error_message}")
-#                 log_failed_fighter(url)
-#                 continue
-
-#             save_fighter_details_to_html(page, url, DISCORD_WEBHOOK)
-
-#             #Recreate browser and page objects every 100 iterations to reset memory usage
-#             if i % 100 == 0 and i > 0:
-#                 browser, page = recover_browser(p, browser)
-
-#         return True
 
 def search_fighter_tapology():
     FIGHTER_PROFILE_URL_PREFIX = "https://www.tapology.com"
@@ -133,10 +66,10 @@ def search_fighter_tapology():
                         fighter_search_attempts += 1
                         request_cooldown = 60
 
-                    elif response.status_code == FORBIDDEN_ERROR_CODE:
-                        logger.warning(f"403 Forbidden error for fighter profile: {full_url}\nStatus Code: {response.status_code}")
+                    elif response.status_code in MAJOR_ERROR_CODE:
+                        logger.warning(f"Major error for fighter profile: {full_url}\nStatus Code: {response.status_code}")
                         fighter_search_attempts += 1
-                        #If we receive a 403 error, we pause for 60 minutes before retrying the request in hopes that Tapology will lift the temporary block on our requests.
+                        #If we receive a 403/503 error, we pause for 60 minutes before retrying the request in hopes that Tapology will lift the temporary block on our requests.
                         request_cooldown = 3600
                     
                     else:

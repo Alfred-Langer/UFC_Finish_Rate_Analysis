@@ -14,8 +14,12 @@ import random
 logger = logging.getLogger(__name__)
 
 DELAY_BETWEEN_SEARCHES = 4
-REQUEST_TIMEOUT_ERROR_CODE = 28
-MEMORY_CRASH_ERROR_CODE = 27
+#Request timeout, memory crash, and connection reset errors are the most common errors we encounter during scraping. 
+MINOR_ERROR_CODES = [28, 27, 55] #These are error codes that we consider to be minor and potentially recoverable with retries. 
+
+#403 and 503 errors are typically caused by Tapology temporarily blocking our requests. We consider these to be major errors
+#because they require a longer cooldown period and session reset in order to potentially bypass the block.
+MAJOR_ERROR_CODE = [503, 403]
 
 
 def normalize_ufc_event_name(event_name):
@@ -98,6 +102,8 @@ def search_event_tapology():
         
         event_search_attempts = 0
         while event_search_attempts < 3:
+            request_cooldown = 0
+
             try:
                 logger.info(f"Processing {i+1}/{len(ufc_events)}: {event}")
                 time.sleep(DELAY_BETWEEN_SEARCHES + random.randint(0,3))
@@ -109,32 +115,39 @@ def search_event_tapology():
                 url = TAPOLOGY_TEMPLATE_EVENT_SEARCH_STRING.replace("@@@",quote_plus(event_title))
                 response = session.get(url, impersonate=session_context)
                 
-                if response.status_code != 200:
-                    raise Exception(f"Received non-200 status code: {response.status_code} for event: {event}")
-                
-                break
-            
-            except CurlError as e:
-                #Typically the cause for an exception is a short timeout for requests from Tapology or a memory crash from the browser
-                if e.code == REQUEST_TIMEOUT_ERROR_CODE or e.code == MEMORY_CRASH_ERROR_CODE:
-                    logger.warning(f"Memory Crash or Request Timeout on event: {event}\n{type(e).__name__}: {e}")
-                    event_search_attempts += 1
 
-                #Unknown exception. Will have to inspect logs for further debugging
+                if response.status_code != 200:
+                    if response.status_code in MINOR_ERROR_CODES:
+                        logger.warning(f"Memory Crash or Request Timeout on event: {event}\nStatus Code: {response.status_code}")
+                        event_search_attempts += 1
+                        request_cooldown = 60
+
+                    elif response.status_code in MAJOR_ERROR_CODE:
+                        logger.warning(f"Major error for event: {event}\nStatus Code: {response.status_code}")
+                        event_search_attempts += 1
+                        #If we receive a major error, we pause for 60 minutes before retrying the request in hopes that Tapology will lift the temporary block on our requests.
+                        request_cooldown = 3600
+                    
+                    else:
+                        raise Exception(f"Received non-200 status code: {response.status_code} for event: {event}")
+
+                #If we receive a successful response, we break out of the retry loop and continue with parsing the event details
                 else:
-                    raise  # re-raise unexpected curl errors
+                    break
+            
 
             except Exception as e:
 
                 error_message = f"Unhandled Request error for event: {event}\n{type(e).__name__}: {e}"
                 logger.error(error_message)
-                #send_discord_fail_notifcation(DISCORD_WEBHOOK, f"SCRAPING_ERROR(Event): {error_message}")
+                send_discord_fail_notifcation(DISCORD_WEBHOOK, f"SCRAPING_ERROR(Event): {error_message}")
                 event_search_attempts = 3
+                request_cooldown = 300
 
             #If we encounter any error, we recreate the session and pause for 1 minute before retrying the request.
             #We do this in hopes that if Tapology is blocking our requests temporarily, we can bypass the block by waiting and resetting our session.
-            logger.info("Pausing for 1 minute before continuing with scrape")
-            time.sleep(60 * 10)
+            logger.info(f"Pausing for {request_cooldown // 60} minutes before continuing with scrape")
+            time.sleep(request_cooldown)
             logger.info("Recreating browser...")
             session.close()
             session, session_counter, session_context = create_session(session_counter)
@@ -143,7 +156,6 @@ def search_event_tapology():
         if event_search_attempts >= 3:
             error_message = f"Our script was not able to successfully navigate to the event: {event} after 3 attempts. Skipping this event."
             logger.error(error_message)
-            #send_discord_fail_notifcation(DISCORD_WEBHOOK, f"SCRAPING ERROR(Event): {error_message}")
             log_failed_event(event)
             continue
         
@@ -157,7 +169,7 @@ def search_event_tapology():
         if len(event_links) == 0:
             error_message = f"No Tapology event <a> tags were found for: {event}. Skipping this event."
             logger.warning(error_message)
-            #send_discord_fail_notifcation(DISCORD_WEBHOOK, f"SCRAPING ERROR(Event): {error_message}")
+            send_discord_fail_notifcation(DISCORD_WEBHOOK, f"SCRAPING ERROR(Event): {error_message}")
             log_failed_event(event)
             continue
         
@@ -172,7 +184,7 @@ def search_event_tapology():
         else:
             error_message = f"Unable to find a Tapology <a> tag that matched with the event name: {event}. Skipping this event."
             logger.warning(error_message)
-            #send_discord_fail_notifcation(DISCORD_WEBHOOK, f"SCRAPING ERROR(Event): {error_message}")
+            send_discord_fail_notifcation(DISCORD_WEBHOOK, f"SCRAPING ERROR(Event): {error_message}")
             log_failed_event(event)
             continue
         
@@ -269,7 +281,7 @@ def save_event_details_to_html(session, link, event, fighter_urls, webhook, sess
     except Exception as e:
         error_message = f"An exception occured while attempting to save the details of the following event: {event}\n{type(e).__name__}-{e}"
         logger.warning(error_message)
-        #send_discord_fail_notifcation(webhook, f"SCRAPING ERROR(Event): {error_message}")
+        send_discord_fail_notifcation(webhook, f"SCRAPING ERROR(Event): {error_message}")
 
 if __name__ == "__main__":
     obtain_ufc_event_names()
