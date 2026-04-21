@@ -5,3 +5,7 @@ SEX_OVERRIDES: dict[int, str] = {
     63947:  "M",  # Aleksander Doskalchuk
     173019: "M",  # Mashrabjon Ruziboev
 }
+
+SEX_OVERRIDES_BY_NAME: dict[str, str] = {
+    "Matt Lindland % The Law" : "M",
+}

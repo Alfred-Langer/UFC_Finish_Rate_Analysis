@@ -18,7 +18,7 @@ from unidecode import unidecode
 from bs4 import BeautifulSoup
 
 from config import FIGHTER_HTML_DIR
-from parser.constants import SEX_OVERRIDES
+from parser.constants import SEX_OVERRIDES, SEX_OVERRIDES_BY_NAME
 from models.fighter import Fighter
 
 logger = logging.getLogger(__name__)
@@ -414,8 +414,12 @@ def parse_fighter_profile(html_path: Path) -> tuple[Fighter, int]:
 
     # Determine sex from championship href substrings
     sex = parse_sex(soup)
-    if sex == "NA" and tapology_id in SEX_OVERRIDES:
-        sex = SEX_OVERRIDES[tapology_id]
+    if sex == "NA":
+        if tapology_id in SEX_OVERRIDES:
+            sex = SEX_OVERRIDES[tapology_id]
+
+        elif name in SEX_OVERRIDES_BY_NAME:
+            sex = SEX_OVERRIDES_BY_NAME[f"{name} % {nick_name}"]
 
     return Fighter(
         name=name,

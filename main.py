@@ -42,17 +42,20 @@ def setup_logging() -> None:
         lg.addHandler(file_handler(filename))
 
 
-def run_scraping() -> bool:
+def run_scraping(phase_flags:tuple[bool] = (True, True, True)) -> bool:
     logger.info("=== Phase 1: Scraping ===")
     try:
-        logger.info("Scraping UFC event names from Wikipedia...")
-        se.obtain_ufc_event_names()
+        if phase_flags[0]:
+            logger.info("Scraping UFC event names from Wikipedia...")
+            se.obtain_ufc_event_names()
 
-        logger.info("Scraping event details from Tapology...")
-        se.search_event_tapology()
+        if phase_flags[1]:
+            logger.info("Scraping event details from Tapology...")
+            se.search_event_tapology()
 
-        logger.info("Scraping fighter profiles from Tapology...")
-        sf.search_fighter_tapology()
+        if phase_flags[2]:
+            logger.info("Scraping fighter profiles from Tapology...")
+            sf.search_fighter_tapology()
 
         logger.info("Scraping phase complete.")
         return True
@@ -108,12 +111,12 @@ def run_pipeline() -> bool:
         return False
 
     if not run_fighters():
-        logger.error("Pipeline aborted: fighters phase failed.")
-        return False
+       logger.error("Pipeline aborted: fighters phase failed.")
+       return False
 
     if not run_events():
-        logger.error("Pipeline aborted: events & bouts phase failed.")
-        return False
+       logger.error("Pipeline aborted: events & bouts phase failed.")
+       return False
 
     logger.info("Pipeline completed successfully.")
     return True

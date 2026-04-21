@@ -87,7 +87,12 @@ def load_events(session, events):
                     bout_existing.fighter_one_age_at_bout = bout.fighter_one_age_at_bout
                     bout_existing.fighter_two_age_at_bout = bout.fighter_two_age_at_bout
                 else:
-                    bout.event_id = existing.id
+                    # Redirect the bout's back-reference to the persistent `existing`
+                    # event before adding. Without this, session.add(bout) cascades
+                    # through bout.event (default save-update cascade) back to the
+                    # incoming transient event object, queuing it for INSERT and
+                    # causing a duplicate-key error on the next flush.
+                    bout.event = existing
                     session.add(bout)
         else:
             sp = session.begin_nested()

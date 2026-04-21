@@ -33,10 +33,11 @@ EXCLUDED_EVENTS = (
 
     #These events are excluded because they were cancelled due to fighter injury or other issues.
     "UFC on ESPN: Overeem vs. Harris",
-    "UFC 233: Cejudo vs. Dillashaw"
+    "UFC 233: Cejudo vs. Dillashaw",
     "UFC Fight Night: Lamas vs. Penn",
     "UFC Fight Night: Hermansson vs. Weidman",
     "UFC 176: Aldo vs. Mendes 2",
+    "UFC 176: Aldo vs. Mendes II"
 )
 
 
