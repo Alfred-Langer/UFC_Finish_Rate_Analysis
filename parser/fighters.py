@@ -385,32 +385,54 @@ def parse_fighter_profile(html_path: Path) -> tuple[Fighter, int]:
 
     #Parsing the MMA Bouts of an MMA Fighter
     if not_a_boxer:
-        success, no_contests, valid_mma_bout_divs, non_unified_rules_bouts_detected = verify_mma_record_of_mma_fighter(
-                                                            mma_bout_divs,
-                                                            number_of_bouts,
-                                                            name)
+        success, no_contests, valid_mma_bout_divs, \
+            non_unified_rules_bouts_detected = verify_mma_record_of_mma_fighter(
+            mma_bout_divs,
+            number_of_bouts,
+            name)
+        
         if not success:
             warnings += 1
 
     #Parsing the MMA Bouts of a Boxer (They primarily boxed but they occasionally fought MMA)
     else:
-        wins, losses, draws, no_contests, number_of_bouts, valid_mma_bout_divs, non_unified_rules_bouts_detected = parse_mma_record_of_boxer(mma_bout_divs)
+        wins, losses, draws, no_contests, number_of_bouts, \
+        valid_mma_bout_divs, non_unified_rules_bouts_detected = parse_mma_record_of_boxer(
+            mma_bout_divs
+        )
 
+    # Initialize UFC bout counters to compute UFC-specific finish rate and total UFC bouts
+    num_ufc_bouts = 0
     num_finish_victories = 0
-    for mma_bout_div in valid_mma_bout_divs:
-        win_div = mma_bout_div.select_one("div[data-status='win']")
-        if not win_div:
-            continue
-        method_div = win_div.select_one("div.-rotate-90")
-        if not method_div:
-            logger.warning(f"Could not find method of victory for MMA Fighter: {name}")
-            warnings += 1
-            continue
-        if "DEC" not in method_div.get_text():
-            num_finish_victories += 1
+    num_ufc_finish_victories = 0
 
-    total_bouts = wins + losses + draws
-    finish_rate = num_finish_victories / total_bouts if total_bouts > 0 else 0.0
+    for mma_bout_div in valid_mma_bout_divs:
+
+        #Determine if the fight was in the UFC by looking for an img tag with the alt text "UFC" within the bout div
+        ufc_bout_flag = True if mma_bout_div.find('img', alt='UFC') else False
+    
+        if ufc_bout_flag:
+            num_ufc_bouts += 1
+
+        
+        #Check if the fight was a win for the fighter.
+        if mma_bout_div.get("data-status") == "win":
+
+            #Look for the method of victory which is a div tag with the class "-rotate-90" within the MMA bout div. 
+            method_div = mma_bout_div.select_one("div.-rotate-90")
+            if not method_div:
+                logger.warning(f"Could not find method of victory for MMA Fighter: {name}")
+                warnings += 1
+                continue
+        
+            #If the text within the method div doesn't contain "DEC" we can count it as a finish victory
+            if "DEC" not in method_div.get_text():
+                num_finish_victories += 1
+
+                #If the fight was a finish victory and it was in the UFC, we can count it as a UFC finish victory
+                if ufc_bout_flag:
+                    num_ufc_finish_victories += 1
+
 
     # Determine sex from championship href substrings
     sex = parse_sex(soup)
@@ -436,8 +458,10 @@ def parse_fighter_profile(html_path: Path) -> tuple[Fighter, int]:
         losses=losses,
         draws=draws,
         no_contests=no_contests,
+        finishes = num_finish_victories,
+        number_of_ufc_bouts=num_ufc_bouts,
+        ufc_finishes=num_ufc_finish_victories,
         has_non_unified_rules_bouts=non_unified_rules_bouts_detected,
-        overall_finish_rate=finish_rate,
         latest_bout_date=latest_bout_date,
         tapology_id=tapology_id
     ), warnings

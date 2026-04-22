@@ -27,14 +27,17 @@ class Fighter(Base):
     draws = Column(Integer, nullable=False, default=0)
     no_contests = Column(Integer, nullable=False)
     number_of_total_bouts = Column(Integer, nullable=False)
+    finishes = Column(Integer, nullable=False)
+    number_of_ufc_bouts = Column(Integer, nullable=False)
+    ufc_finishes = Column(Integer, nullable=False)
     latest_bout_date = Column(Date, nullable=True)
 
     # Flag for fighters with bouts under non-unified rules
     # Fights where the round format was not 3x5, 2x5, or 5x5
     has_non_unified_rules_bouts = Column(Boolean, nullable=False, default=False)
     
-    # Stats
-    overall_finish_rate = Column(Float, nullable=False)
+    # # Stats
+    # overall_finish_rate = Column(Float, nullable=False)
 
     # Database-level constraints
     __table_args__ = (
@@ -51,10 +54,13 @@ class Fighter(Base):
         CheckConstraint('losses >= 0', name='check_losses_non_negative'),
         CheckConstraint('draws >= 0', name='check_draws_non_negative'),
         CheckConstraint('no_contests >= 0', name='check_no_contests_non_negative'),
+        CheckConstraint('finishes >= 0', name='check_finishes_non_negative'),
+        CheckConstraint('number_of_ufc_bouts >= 0', name='check_ufc_bouts_non_negative'),
+        CheckConstraint('ufc_finishes >= 0', name='check_ufc_finishes_non_negative'),
         CheckConstraint('number_of_total_bouts >= 0', name='check_total_bouts_non_negative'),
 
         # Stats constraints
-        CheckConstraint('overall_finish_rate >= 0.0 AND overall_finish_rate <= 1.0', name='check_overall_finish_rate_range'),
+        #CheckConstraint('overall_finish_rate >= 0.0 AND overall_finish_rate <= 1.0', name='check_overall_finish_rate_range'),
     )
 
     # Computed property — active_fighter
@@ -113,18 +119,19 @@ class Fighter(Base):
         return value
 
     # Python-level validation — Record
-    @validates('number_of_total_bouts', 'wins', 'losses', 'draws', 'no_contests')
+    @validates('number_of_total_bouts', 'wins', 'losses', 'draws', 'no_contests',
+               'finishes', 'number_of_ufc_bouts', 'ufc_finishes')
     def validate_non_negative(self, key, value):
         if value < 0:
             raise ValueError(f"{key} cannot be negative")
         return value
 
     # Python-level validation — Stats
-    @validates('overall_finish_rate')
-    def validate_finish_rate(self, key, value):
-        if value < 0.0 or value > 1.0:
-            raise ValueError("overall_finish_rate must be between 0.0 and 1.0")
-        return value
+    # @validates('overall_finish_rate')
+    # def validate_finish_rate(self, key, value):
+    #     if value < 0.0 or value > 1.0:
+    #         raise ValueError("overall_finish_rate must be between 0.0 and 1.0")
+    #     return value
     
     # Python-level validation — Tapology ID
     @validates('tapology_id')
